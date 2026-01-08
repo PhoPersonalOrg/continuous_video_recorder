@@ -18,7 +18,17 @@ storage:
   auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
   
 webcam:
+  # Single camera mode (backward compatible)
   device_index: 0
+  
+  # Multi-camera mode (uncomment to use multiple cameras)
+  # cameras:
+  #   - device_index: 0
+  #     name: "Front Camera"
+  #     output_dir: "M:\\ScreenRecordings\\EyeTrackerVR_Recordings\\Camera0"
+  #   - device_index: 1
+  #     name: "Side Camera"
+  #     output_dir: "M:\\ScreenRecordings\\EyeTrackerVR_Recordings\\Camera1"
 
 lsl:
   enabled: true

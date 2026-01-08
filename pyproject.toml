@@ -9,4 +9,5 @@ dependencies = [
     "numpy>=1.24.0",
     "pyyaml>=6.0",
     "pylsl>=1.16.0",
+    "vidgear>=0.3.0",
 ]

@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
+from vidgear.gears import WriteGear
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class VideoRecorder:
         self.min_duration = self.storage_config.get("min_duration", 5)
         self.auto_split_duration = self.storage_config.get("auto_split_duration", 3600)  # Default 1 hour
         
-        self.writer: Optional[cv2.VideoWriter] = None
+        self.writer: Optional[WriteGear] = None
         self.current_file: Optional[Path] = None
         self.start_time: Optional[float] = None
         self.frame_count = 0
@@ -56,30 +57,25 @@ class VideoRecorder:
                 output_dir=self.output_dir
             )
             
-            # Initialize video writer
-            fourcc = cv2.VideoWriter_fourcc(*self.codec)
-            self.writer = cv2.VideoWriter(
-                str(self.current_file),
-                fourcc,
-                self.fps,
-                self.resolution
-            )
+            # Configure WriteGear output parameters (FFmpeg format)
+            output_params = {
+                "-vcodec": "libx264",
+                "-preset": "medium",
+                "-crf": "23",
+                "-input_framerate": str(self.fps),
+            }
             
-            if not self.writer.isOpened():
-                # Try fallback codec
-                logger.warning(f"Failed to open writer with codec {self.codec}, trying XVID")
-                fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                self.writer = cv2.VideoWriter(
-                    str(self.current_file),
-                    fourcc,
-                    self.fps,
-                    self.resolution
-                )
-                
-                if not self.writer.isOpened():
-                    logger.error("Failed to initialize video writer with fallback codec")
-                    self.writer = None
-                    return None
+            # Map codec names to VidGear/FFmpeg codecs
+            codec_map = {
+                "mp4v": "libx264",
+                "XVID": "libx264",
+                "MJPG": "mjpeg",
+                "H264": "libx264",
+            }
+            output_params["-vcodec"] = codec_map.get(self.codec, "libx264")
+            
+            # Initialize VidGear WriteGear writer
+            self.writer = WriteGear(output_filename=str(self.current_file), logging=True, **output_params)
             
             self.start_time = time.time()
             self.frame_count = 0
@@ -129,7 +125,7 @@ class VideoRecorder:
             duration = time.time() - self.start_time if self.start_time else 0
             
             # Release writer
-            self.writer.release()
+            self.writer.close()
             self.writer = None
             
             # Check minimum duration
@@ -209,7 +205,7 @@ class VideoRecorder:
         
         try:
             # Release current writer
-            self.writer.release()
+            self.writer.close()
             self.writer = None
             
             # Save old file if it meets minimum duration
@@ -228,30 +224,25 @@ class VideoRecorder:
                 output_dir=self.output_dir
             )
             
-            # Initialize new video writer
-            fourcc = cv2.VideoWriter_fourcc(*self.codec)
-            self.writer = cv2.VideoWriter(
-                str(self.current_file),
-                fourcc,
-                self.fps,
-                self.resolution
-            )
+            # Configure WriteGear output parameters (FFmpeg format)
+            output_params = {
+                "-vcodec": "libx264",
+                "-preset": "medium",
+                "-crf": "23",
+                "-input_framerate": str(self.fps),
+            }
             
-            if not self.writer.isOpened():
-                # Try fallback codec
-                logger.warning(f"Failed to open writer with codec {self.codec}, trying XVID")
-                fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                self.writer = cv2.VideoWriter(
-                    str(self.current_file),
-                    fourcc,
-                    self.fps,
-                    self.resolution
-                )
-                
-                if not self.writer.isOpened():
-                    logger.error("Failed to initialize video writer with fallback codec during split")
-                    self.writer = None
-                    return None
+            # Map codec names to VidGear/FFmpeg codecs
+            codec_map = {
+                "mp4v": "libx264",
+                "XVID": "libx264",
+                "MJPG": "mjpeg",
+                "H264": "libx264",
+            }
+            output_params["-vcodec"] = codec_map.get(self.codec, "libx264")
+            
+            # Initialize new VidGear WriteGear writer
+            self.writer = WriteGear(output_filename=str(self.current_file), logging=True, **output_params)
             
             # Reset timing for new file
             self.start_time = time.time()

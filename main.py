@@ -2,9 +2,12 @@
 import cv2
 import time
 import logging
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 from enum import Enum
+
+from vidgear.gears import CamGear
 
 from src.config_loader import ConfigLoader
 from src.detector import PresenceDetector
@@ -38,7 +41,8 @@ class ContinuousVideoRecorder:
         
         # Initialize components
         self.detector = PresenceDetector(self.config)
-        self.recorder = VideoRecorder(self.config)
+        self.recorder = VideoRecorder(self.config)  # Primary recorder for single camera mode
+        self.recorders: Dict[int, VideoRecorder] = {}  # Multiple recorders for multi-camera mode
         self.lsl_trigger = LSLTrigger(self.config)
         
         # State management
@@ -46,9 +50,13 @@ class ContinuousVideoRecorder:
         self.buffer_start_time: Optional[float] = None
         self.absence_timeout = self.config.get("buffer", {}).get("absence_timeout", 35)
         
-        # Webcam
-        self.cap: Optional[cv2.VideoCapture] = None
-        self.device_index = self.config.get("webcam", {}).get("device_index", 0)
+        # Webcam - support single or multiple cameras
+        self.cameras: List[Dict] = []
+        self.camera_streams: Dict[int, CamGear] = {}
+        self.active_camera_index = 0
+        
+        # Initialize cameras
+        self._initialize_cameras()
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -56,38 +64,93 @@ class ContinuousVideoRecorder:
         # Setup signal handlers
         setup_signal_handlers(self.shutdown)
     
-    def initialize_webcam(self) -> bool:
-        """Initialize webcam capture.
+    def _initialize_cameras(self) -> None:
+        """Initialize camera configurations from config."""
+        webcam_config = self.config.get("webcam", {})
         
+        # Check if multiple cameras are configured
+        if "cameras" in webcam_config and isinstance(webcam_config["cameras"], list):
+            # Multiple cameras configuration
+            for cam_config in webcam_config["cameras"]:
+                self.cameras.append({
+                    "device_index": cam_config.get("device_index", 0),
+                    "name": cam_config.get("name", f"Camera_{cam_config.get('device_index', 0)}"),
+                    "output_dir": cam_config.get("output_dir", self.config.get("storage", {}).get("output_dir", "./recordings")),
+                })
+        else:
+            # Single camera configuration (backward compatible)
+            device_index = webcam_config.get("device_index", 0)
+            self.cameras.append({
+                "device_index": device_index,
+                "name": "Camera_0",
+                "output_dir": self.config.get("storage", {}).get("output_dir", "./recordings"),
+            })
+    
+    def initialize_webcam(self, camera_index: int = 0) -> bool:
+        """Initialize webcam capture using VidGear CamGear.
+        
+        Args:
+            camera_index: Index of camera in self.cameras list.
+            
         Returns:
             True if webcam initialized successfully, False otherwise.
         """
+        if camera_index >= len(self.cameras):
+            self.logger.error(f"Camera index {camera_index} out of range")
+            return False
+        
         try:
-            self.cap = cv2.VideoCapture(self.device_index)
-            if not self.cap.isOpened():
+            cam_config = self.cameras[camera_index]
+            device_index = cam_config["device_index"]
+            
+            # Configure CamGear options
+            options = {
+                "CAP_PROP_FRAME_WIDTH": self.config["video"]["resolution"][0],
+                "CAP_PROP_FRAME_HEIGHT": self.config["video"]["resolution"][1],
+                "CAP_PROP_FPS": self.config["video"]["fps"],
+            }
+            
+            # Initialize VidGear CamGear stream
+            stream = CamGear(source=device_index, logging=True, **options)
+            stream.start()
+            
+            # Test if stream is working
+            frame = stream.read()
+            if frame is None:
                 # Try to find any available camera
-                self.logger.warning(f"Failed to open camera {self.device_index}, trying to find available camera")
+                self.logger.warning(f"Failed to open camera {device_index}, trying to find available camera")
+                stream.stop()
+                stream = None
+                
                 for i in range(10):
-                    self.cap = cv2.VideoCapture(i)
-                    if self.cap.isOpened():
-                        self.device_index = i
+                    test_stream = CamGear(source=i, logging=True, **options)
+                    test_stream.start()
+                    test_frame = test_stream.read()
+                    if test_frame is not None:
+                        device_index = i
+                        cam_config["device_index"] = i
+                        stream = test_stream
                         self.logger.info(f"Found camera at index {i}")
                         break
+                    test_stream.stop()
                 
-                if not self.cap.isOpened():
-                    self.logger.error("No camera found")
+                if stream is None:
+                    self.logger.error(f"No camera found for {cam_config['name']}")
+                    return False
+                
+                # Verify the found stream works
+                test_frame = stream.read()
+                if test_frame is None:
+                    stream.stop()
+                    self.logger.error(f"Camera {device_index} opened but cannot read frames for {cam_config['name']}")
                     return False
             
-            # Set camera properties
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config["video"]["resolution"][0])
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config["video"]["resolution"][1])
-            self.cap.set(cv2.CAP_PROP_FPS, self.config["video"]["fps"])
-            
-            self.logger.info(f"Webcam initialized (device {self.device_index})")
+            self.camera_streams[camera_index] = stream
+            self.logger.info(f"Webcam initialized: {cam_config['name']} (device {device_index})")
             return True
             
         except Exception as e:
-            self.logger.error(f"Failed to initialize webcam: {e}")
+            self.logger.error(f"Failed to initialize webcam {camera_index}: {e}")
             return False
     
     def shutdown(self) -> None:
@@ -95,16 +158,152 @@ class ContinuousVideoRecorder:
         self.logger.info("Shutting down...")
         self.shutdown_requested = True
         
-        # Stop any active recording
+        # Stop any active recording (single camera mode)
         if self.state == RecordingState.RECORDING or self.state == RecordingState.BUFFERING:
             self._stop_recording()
         
-        # Cleanup
-        if self.cap is not None:
-            self.cap.release()
+        # Stop multi-camera recordings
+        for camera_index, cam_data in self.recorders.items():
+            if cam_data["state"] != RecordingState.IDLE:
+                try:
+                    cam_data["recorder"].stop_recording()
+                    self.logger.info(f"Stopped recording for camera {camera_index}")
+                except Exception as e:
+                    self.logger.warning(f"Error stopping recording for camera {camera_index}: {e}")
+        
+        # Cleanup camera streams
+        for camera_index, stream in self.camera_streams.items():
+            try:
+                stream.stop()
+                self.logger.info(f"Stopped camera stream {camera_index}")
+            except Exception as e:
+                self.logger.warning(f"Error stopping camera stream {camera_index}: {e}")
+        self.camera_streams.clear()
         
         self.lsl_trigger.close()
         self.logger.info("Shutdown complete")
+    
+    def _start_multi_camera_recording(self) -> None:
+        """Start multi-camera recording in separate threads."""
+        self.logger.info(f"Starting multi-camera recording with {len(self.cameras)} cameras...")
+        
+        # Create recorders for each camera
+        for i, cam_config in enumerate(self.cameras):
+            if i not in self.camera_streams:
+                continue
+            
+            # Create config for this camera with custom output directory
+            cam_config_dict = self.config.copy()
+            cam_config_dict["storage"] = cam_config_dict.get("storage", {}).copy()
+            cam_config_dict["storage"]["output_dir"] = cam_config["output_dir"]
+            
+            recorder = VideoRecorder(cam_config_dict)
+            detector = PresenceDetector(cam_config_dict)
+            self.recorders[i] = {
+                "recorder": recorder,
+                "detector": detector,
+                "state": RecordingState.IDLE,
+                "buffer_start_time": None,
+            }
+        
+        # Start recording threads for each camera
+        threads = []
+        for i in self.recorders.keys():
+            thread = threading.Thread(target=self._camera_recording_loop, args=(i,), daemon=True)
+            thread.start()
+            threads.append(thread)
+            self.logger.info(f"Started recording thread for {self.cameras[i]['name']}")
+        
+        # Wait for all threads
+        try:
+            for thread in threads:
+                thread.join()
+        except KeyboardInterrupt:
+            self.logger.info("Interrupted by user")
+        finally:
+            self.shutdown()
+    
+    def _camera_recording_loop(self, camera_index: int) -> None:
+        """Recording loop for a single camera (used in multi-camera mode).
+        
+        Args:
+            camera_index: Index of camera in self.cameras list.
+        """
+        cam_config = self.cameras[camera_index]
+        cam_data = self.recorders[camera_index]
+        recorder = cam_data["recorder"]
+        detector = cam_data["detector"]
+        stream = self.camera_streams[camera_index]
+        
+        frame_time = 1.0 / self.config["video"]["fps"]
+        
+        try:
+            while not self.shutdown_requested:
+                loop_start = time.time()
+                
+                # Read frame using VidGear
+                frame = stream.read()
+                if frame is None:
+                    self.logger.warning(f"Failed to read frame from {cam_config['name']}")
+                    time.sleep(0.1)
+                    continue
+                
+                current_time = time.time()
+                
+                # Detect presence
+                presence_detected = detector.detect_presence(frame, current_time)
+                
+                # State machine
+                if presence_detected:
+                    if cam_data["state"] == RecordingState.IDLE:
+                        file_path = recorder.start_recording()
+                        if file_path:
+                            cam_data["state"] = RecordingState.RECORDING
+                            cam_data["buffer_start_time"] = None
+                            self.logger.info(f"{cam_config['name']}: Recording started: {file_path.name}")
+                    elif cam_data["state"] == RecordingState.BUFFERING:
+                        cam_data["state"] = RecordingState.RECORDING
+                        cam_data["buffer_start_time"] = None
+                        self.logger.debug(f"{cam_config['name']}: User returned, continuing recording")
+                
+                else:  # No presence detected
+                    if cam_data["state"] == RecordingState.RECORDING:
+                        cam_data["state"] = RecordingState.BUFFERING
+                        cam_data["buffer_start_time"] = current_time
+                        self.logger.debug(f"{cam_config['name']}: Entered buffering state")
+                    elif cam_data["state"] == RecordingState.BUFFERING:
+                        # Check if buffer timeout expired
+                        if cam_data["buffer_start_time"] and (current_time - cam_data["buffer_start_time"]) >= self.absence_timeout:
+                            file_path = recorder.stop_recording()
+                            cam_data["state"] = RecordingState.IDLE
+                            cam_data["buffer_start_time"] = None
+                            if file_path:
+                                self.logger.info(f"{cam_config['name']}: Recording stopped: {file_path.name}")
+                
+                # Write frame if recording
+                if cam_data["state"] == RecordingState.RECORDING or cam_data["state"] == RecordingState.BUFFERING:
+                    # Check for auto-split
+                    if recorder.should_split():
+                        old_file = recorder.get_current_file()
+                        old_duration = recorder.get_duration()
+                        new_file = recorder.split_recording()
+                        if new_file and old_file:
+                            self.logger.info(f"{cam_config['name']}: Auto-split at {old_duration:.1f}s - New file: {new_file.name}")
+                    
+                    recorder.write_frame(frame)
+                
+                # Maintain frame rate
+                elapsed = time.time() - loop_start
+                sleep_time = max(0, frame_time - elapsed)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+        
+        except Exception as e:
+            self.logger.error(f"Error in camera {camera_index} loop: {e}", exc_info=True)
+        finally:
+            # Stop recording if active
+            if cam_data["state"] != RecordingState.IDLE:
+                recorder.stop_recording()
     
     def _start_recording(self) -> None:
         """Start recording session."""
@@ -160,22 +359,41 @@ class ContinuousVideoRecorder:
         """Main application loop."""
         self.logger.info("Starting continuous video recorder...")
         
-        if not self.initialize_webcam():
-            self.logger.error("Failed to initialize webcam. Exiting.")
+        # Initialize all cameras
+        if len(self.cameras) == 0:
+            self.logger.error("No cameras configured. Exiting.")
             return
         
-        self.logger.info("Entering main loop. Press Ctrl+C to stop.")
+        # Initialize primary camera (first one)
+        if not self.initialize_webcam(0):
+            self.logger.error("Failed to initialize primary webcam. Exiting.")
+            return
+        
+        # If multiple cameras, initialize them in separate threads
+        if len(self.cameras) > 1:
+            self.logger.info(f"Initializing {len(self.cameras)} cameras...")
+            for i in range(1, len(self.cameras)):
+                if not self.initialize_webcam(i):
+                    self.logger.warning(f"Failed to initialize camera {i}, continuing with available cameras")
+            
+            # Start multi-camera recording threads
+            self._start_multi_camera_recording()
+            return
+        
+        # Single camera mode
+        self.logger.info("Entering main loop (single camera). Press Ctrl+C to stop.")
         
         last_face_check_time = time.time()
         frame_time = 1.0 / self.config["video"]["fps"]
+        stream = self.camera_streams[0]
         
         try:
             while not self.shutdown_requested:
                 loop_start = time.time()
                 
-                # Read frame
-                ret, frame = self.cap.read()
-                if not ret:
+                # Read frame using VidGear
+                frame = stream.read()
+                if frame is None:
                     self.logger.warning("Failed to read frame from webcam")
                     time.sleep(0.1)
                     continue
