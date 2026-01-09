@@ -44,9 +44,19 @@ class ContinuousVideoRecorder:
         self.detectors: Dict[int, PresenceDetector] = {}
         self.recorders: Dict[int, VideoRecorder] = {}
         
+        # Per-camera recording modes: {camera_id: "motion_detect" | "usb_continuous"}
+        self.recording_modes: Dict[int, str] = {}
+        
         # Per-camera state management: {camera_id: state}
         self.states: Dict[int, RecordingState] = {}
         self.buffer_start_times: Dict[int, Optional[float]] = {}
+        
+        # USB connection state tracking: {camera_id: bool}
+        self.usb_connected: Dict[int, bool] = {}
+        
+        # Reconnection check interval (check every N seconds)
+        self.reconnection_check_interval = 5.0
+        self.last_reconnection_check: Dict[int, float] = {}
         
         self.absence_timeout = self.config.get("buffer", {}).get("absence_timeout", 35)
         
@@ -73,9 +83,20 @@ class ContinuousVideoRecorder:
         base_output_dir = Path(storage_config.get("output_dir", "./recordings"))
         camera_output_dirs = storage_config.get("camera_output_dirs", {})
         
+        webcam_config = self.config.get("webcam", {})
+        
         for camera_id in self.camera_manager.cameras.keys():
-            # Create per-camera detector
-            self.detectors[camera_id] = PresenceDetector(self.config)
+            # Get recording mode for this camera (default: motion_detect)
+            camera_key = f"camera_{camera_id}"
+            per_camera_config = webcam_config.get(camera_key, {})
+            recording_mode = per_camera_config.get("mode", "motion_detect")
+            self.recording_modes[camera_id] = recording_mode
+            
+            # Only create detector for motion_detect cameras
+            if recording_mode == "motion_detect":
+                self.detectors[camera_id] = PresenceDetector(self.config)
+            else:
+                self.logger.info(f"Camera {camera_id}: Using {recording_mode} mode (no presence detector)")
             
             # Create per-camera recorder with optional per-camera output directory
             camera_output_dir = camera_output_dirs.get(str(camera_id)) or camera_output_dirs.get(camera_id)
@@ -94,7 +115,19 @@ class ContinuousVideoRecorder:
             self.states[camera_id] = RecordingState.IDLE
             self.buffer_start_times[camera_id] = None
             
-            self.logger.info(f"Initialized components for camera {camera_id}")
+            # Initialize USB connection state
+            if recording_mode == "usb_continuous":
+                is_connected = self.camera_manager.check_usb_connection(camera_id)
+                self.usb_connected[camera_id] = is_connected
+                self.last_reconnection_check[camera_id] = time.time()
+                if is_connected:
+                    # Start recording immediately if USB camera is connected at startup
+                    self._start_recording(camera_id)
+                    self.logger.info(f"Camera {camera_id}: USB continuous mode - started recording (camera connected)")
+                else:
+                    self.logger.info(f"Camera {camera_id}: USB continuous mode - waiting for camera connection")
+            
+            self.logger.info(f"Initialized components for camera {camera_id} (mode: {recording_mode})")
         
         return True
     
@@ -104,7 +137,7 @@ class ContinuousVideoRecorder:
         self.shutdown_requested = True
         
         # Stop any active recordings for all cameras
-        for camera_id in self.camera_manager.cameras.keys():
+        for camera_id in list(self.camera_manager.cameras.keys()):
             if self.states.get(camera_id) in [RecordingState.RECORDING, RecordingState.BUFFERING]:
                 self._stop_recording(camera_id)
         
@@ -181,6 +214,17 @@ class ContinuousVideoRecorder:
             self.buffer_start_times[camera_id] = time.time()
             self.logger.debug(f"Camera {camera_id}: Entered buffering state")
     
+    def _check_usb_connection(self, camera_id: int) -> bool:
+        """Check USB connection status for a camera.
+        
+        Args:
+            camera_id: Camera identifier.
+            
+        Returns:
+            True if camera is connected, False otherwise.
+        """
+        return self.camera_manager.check_usb_connection(camera_id)
+    
     def run(self) -> None:
         """Main application loop."""
         self.logger.info("Starting continuous video recorder...")
@@ -206,75 +250,159 @@ class ContinuousVideoRecorder:
                 
                 # Process each camera independently
                 for camera_id, camera_info in self.camera_manager.cameras.items():
+                    recording_mode = self.recording_modes.get(camera_id, "motion_detect")
+                    
                     # Read frame from camera
                     frame = self.camera_manager.read_frame(camera_id)
-                    if frame is None:
-                        self.logger.warning(f"Camera {camera_id}: Failed to read frame")
-                        continue
                     
-                    # Get per-camera components
-                    detector = self.detectors[camera_id]
-                    recorder = self.recorders[camera_id]
-                    state = self.states.get(camera_id, RecordingState.IDLE)
-                    buffer_start_time = self.buffer_start_times.get(camera_id)
-                    
-                    # Detect presence
-                    presence_detected = detector.detect_presence(frame, current_time)
-                    
-                    # State machine per camera
-                    if presence_detected:
-                        if state == RecordingState.IDLE:
-                            self._start_recording(camera_id)
-                        elif state == RecordingState.BUFFERING:
-                            # User returned, continue recording
-                            self.states[camera_id] = RecordingState.RECORDING
-                            self.buffer_start_times[camera_id] = None
-                            self.logger.debug(f"Camera {camera_id}: User returned, continuing recording")
-                    
-                    else:  # No presence detected
-                        if state == RecordingState.RECORDING:
-                            self._enter_buffering(camera_id)
-                        elif state == RecordingState.BUFFERING:
-                            # Check if buffer timeout expired
-                            if buffer_start_time and (current_time - buffer_start_time) >= self.absence_timeout:
-                                self._stop_recording(camera_id)
-                    
-                    # Write frame if recording
-                    current_state = self.states.get(camera_id, RecordingState.IDLE)
-                    if current_state == RecordingState.RECORDING or current_state == RecordingState.BUFFERING:
-                        # Check for auto-split (every hour)
-                        if recorder.should_split():
-                            old_file = recorder.get_current_file()
-                            old_duration = recorder.get_duration()
-                            
-                            # Split to new file
-                            new_file = recorder.split_recording()
-                            
-                            if new_file and old_file:
-                                # Send LSL stop marker for old file
-                                metadata = {
-                                    "camera_id": camera_id,
-                                    "filename": old_file.name,
-                                    "session_id": old_file.stem,
-                                    "duration": old_duration,
-                                    "timestamp": time.time(),
-                                    "reason": "auto_split"
-                                }
-                                self.lsl_trigger.send_stop_marker(metadata)
-                                
-                                # Send LSL start marker for new file
-                                metadata = {
-                                    "camera_id": camera_id,
-                                    "filename": new_file.name,
-                                    "session_id": new_file.stem,
-                                    "timestamp": time.time(),
-                                    "reason": "auto_split"
-                                }
-                                self.lsl_trigger.send_start_marker(metadata)
-                                self.logger.info(f"Camera {camera_id}: Auto-split at {old_duration:.1f}s - New file: {new_file.absolute()}")
+                    # Branch logic based on recording mode
+                    if recording_mode == "usb_continuous":
+                        # USB continuous mode: record based on USB connection
+                        recorder = self.recorders[camera_id]
+                        state = self.states.get(camera_id, RecordingState.IDLE)
                         
-                        # Write frame to current recording
-                        recorder.write_frame(frame)
+                        # Check USB connection status
+                        is_connected = self._check_usb_connection(camera_id)
+                        was_connected = self.usb_connected.get(camera_id, False)
+                        self.usb_connected[camera_id] = is_connected
+                        
+                        # Handle connection state changes
+                        if is_connected and not was_connected:
+                            # Camera just connected
+                            self.logger.info(f"Camera {camera_id}: USB camera connected")
+                            if state == RecordingState.IDLE:
+                                self._start_recording(camera_id)
+                        elif not is_connected and was_connected:
+                            # Camera just disconnected
+                            self.logger.info(f"Camera {camera_id}: USB camera disconnected")
+                            if state == RecordingState.RECORDING:
+                                self._stop_recording(camera_id)
+                        
+                        # Attempt reconnection if disconnected
+                        if not is_connected:
+                            last_check = self.last_reconnection_check.get(camera_id, 0)
+                            if (current_time - last_check) >= self.reconnection_check_interval:
+                                self.last_reconnection_check[camera_id] = current_time
+                                if self.camera_manager.reconnect_camera(camera_id):
+                                    self.logger.info(f"Camera {camera_id}: Reconnected successfully")
+                                    self.usb_connected[camera_id] = True
+                                    if state == RecordingState.IDLE:
+                                        self._start_recording(camera_id)
+                        
+                        # Write frame if recording and frame is valid
+                        if frame is not None and is_connected:
+                            current_state = self.states.get(camera_id, RecordingState.IDLE)
+                            if current_state == RecordingState.RECORDING:
+                                # Check for auto-split (every hour)
+                                if recorder.should_split():
+                                    old_file = recorder.get_current_file()
+                                    old_duration = recorder.get_duration()
+                                    
+                                    # Split to new file
+                                    new_file = recorder.split_recording()
+                                    
+                                    if new_file and old_file:
+                                        # Send LSL stop marker for old file
+                                        metadata = {
+                                            "camera_id": camera_id,
+                                            "filename": old_file.name,
+                                            "session_id": old_file.stem,
+                                            "duration": old_duration,
+                                            "timestamp": time.time(),
+                                            "reason": "auto_split"
+                                        }
+                                        self.lsl_trigger.send_stop_marker(metadata)
+                                        
+                                        # Send LSL start marker for new file
+                                        metadata = {
+                                            "camera_id": camera_id,
+                                            "filename": new_file.name,
+                                            "session_id": new_file.stem,
+                                            "timestamp": time.time(),
+                                            "reason": "auto_split"
+                                        }
+                                        self.lsl_trigger.send_start_marker(metadata)
+                                        self.logger.info(f"Camera {camera_id}: Auto-split at {old_duration:.1f}s - New file: {new_file.absolute()}")
+                                
+                                # Write frame to current recording
+                                recorder.write_frame(frame)
+                        elif frame is None and is_connected:
+                            # Frame read failed but device appears connected - might be temporary
+                            self.logger.debug(f"Camera {camera_id}: Temporary frame read failure (device still connected)")
+                    
+                    else:
+                        # Motion detect mode: existing logic
+                        if frame is None:
+                            self.logger.warning(f"Camera {camera_id}: Failed to read frame")
+                            continue
+                        
+                        # Get per-camera components
+                        detector = self.detectors.get(camera_id)
+                        if detector is None:
+                            self.logger.warning(f"Camera {camera_id}: No detector available for motion_detect mode")
+                            continue
+                        
+                        recorder = self.recorders[camera_id]
+                        state = self.states.get(camera_id, RecordingState.IDLE)
+                        buffer_start_time = self.buffer_start_times.get(camera_id)
+                        
+                        # Detect presence
+                        presence_detected = detector.detect_presence(frame, current_time)
+                        
+                        # State machine per camera
+                        if presence_detected:
+                            if state == RecordingState.IDLE:
+                                self._start_recording(camera_id)
+                            elif state == RecordingState.BUFFERING:
+                                # User returned, continue recording
+                                self.states[camera_id] = RecordingState.RECORDING
+                                self.buffer_start_times[camera_id] = None
+                                self.logger.debug(f"Camera {camera_id}: User returned, continuing recording")
+                        
+                        else:  # No presence detected
+                            if state == RecordingState.RECORDING:
+                                self._enter_buffering(camera_id)
+                            elif state == RecordingState.BUFFERING:
+                                # Check if buffer timeout expired
+                                if buffer_start_time and (current_time - buffer_start_time) >= self.absence_timeout:
+                                    self._stop_recording(camera_id)
+                        
+                        # Write frame if recording
+                        current_state = self.states.get(camera_id, RecordingState.IDLE)
+                        if current_state == RecordingState.RECORDING or current_state == RecordingState.BUFFERING:
+                            # Check for auto-split (every hour)
+                            if recorder.should_split():
+                                old_file = recorder.get_current_file()
+                                old_duration = recorder.get_duration()
+                                
+                                # Split to new file
+                                new_file = recorder.split_recording()
+                                
+                                if new_file and old_file:
+                                    # Send LSL stop marker for old file
+                                    metadata = {
+                                        "camera_id": camera_id,
+                                        "filename": old_file.name,
+                                        "session_id": old_file.stem,
+                                        "duration": old_duration,
+                                        "timestamp": time.time(),
+                                        "reason": "auto_split"
+                                    }
+                                    self.lsl_trigger.send_stop_marker(metadata)
+                                    
+                                    # Send LSL start marker for new file
+                                    metadata = {
+                                        "camera_id": camera_id,
+                                        "filename": new_file.name,
+                                        "session_id": new_file.stem,
+                                        "timestamp": time.time(),
+                                        "reason": "auto_split"
+                                    }
+                                    self.lsl_trigger.send_start_marker(metadata)
+                                    self.logger.info(f"Camera {camera_id}: Auto-split at {old_duration:.1f}s - New file: {new_file.absolute()}")
+                            
+                            # Write frame to current recording
+                            recorder.write_frame(frame)
                 
                 # Maintain frame rate
                 elapsed = time.time() - loop_start

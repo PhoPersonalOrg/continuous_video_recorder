@@ -48,10 +48,14 @@ class LSLTrigger:
         stream_type = self.config.get("stream_type", "Markers")
         source_id = self.config.get("source_id", "continuous_video_recorder")
         
+        # Set channel count based on whether metadata will be included
+        include_metadata = self.config.get("include_metadata", False)
+        channel_count = 2 if include_metadata else 1
+        
         info = pylsl.StreamInfo(
             name=stream_name,
             type=stream_type,
-            channel_count=1,
+            channel_count=channel_count,
             nominal_srate=pylsl.IRREGULAR_RATE,
             channel_format=pylsl.cf_string,
             source_id=source_id

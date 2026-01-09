@@ -7,12 +7,13 @@ A robust Python application that continuously monitors webcam(s), detects user p
 - **Multi-Camera Support**: Record from multiple USB cameras simultaneously with independent state machines per camera
 - **VidGear Integration**: Uses VidGear's CamGear and WriteGear for efficient, multi-threaded video capture and recording
 - **Hybrid Presence Detection**: Combines face detection and motion detection for reliable user presence detection
-- **Automatic Recording**: Starts recording when user is detected, stops after configurable absence timeout
-- **Intelligent Buffering**: Continues recording for a configurable period after user leaves (default: 35 seconds)
+- **USB Continuous Recording Mode**: Special mode for cameras that should record continuously while USB-connected (e.g., EEG-mounted pupilometry cameras)
+- **Automatic Recording**: Starts recording when user is detected (motion mode) or when USB camera is connected (USB mode), stops after configurable absence timeout or USB disconnection
+- **Intelligent Buffering**: Continues recording for a configurable period after user leaves (default: 35 seconds) - motion detect mode only
 - **LSL Integration**: Sends LSL markers for recording start/stop events with camera identification, enabling synchronization with EEG, motion capture, and other data streams
 - **Configurable Settings**: YAML-based configuration for video quality, detection parameters, buffer timeouts, and per-camera settings
 - **Graceful Shutdown**: Handles interruptions cleanly, ensuring video files are properly saved
-- **Robust Error Handling**: Automatic camera detection, codec fallbacks, and graceful degradation
+- **Robust Error Handling**: Automatic camera detection, codec fallbacks, graceful degradation, and USB reconnection support
 
 ## Installation
 
@@ -127,14 +128,20 @@ The application uses a `config.yaml` file for configuration. A default configura
 webcam:
   devices: [0, 1]  # Record from cameras at indices 0 and 1
   camera_0:
+    mode: "motion_detect"  # Default: uses face/motion detection
     resolution: [1280, 720]
     fps: 24
   camera_1:
+    mode: "usb_continuous"  # Records continuously while USB connected
     resolution: [1920, 1080]
     fps: 30
 ```
 
-**Note**: When using multiple cameras, each camera operates independently with its own presence detection and recording state machine.
+**Recording Modes**:
+- `motion_detect` (default): Uses face and motion detection to start/stop recording. Recording starts when user presence is detected and stops after absence timeout.
+- `usb_continuous`: Records continuously while the USB camera is connected. Starts recording immediately when camera is plugged in, stops when disconnected. No presence detection or buffering. Ideal for special cameras like EEG-mounted pupilometry cameras.
+
+**Note**: When using multiple cameras, each camera operates independently with its own recording mode, presence detection (if applicable), and recording state machine.
 
 ### LSL Settings
 
@@ -166,9 +173,13 @@ python main.py --config /path/to/custom_config.yaml
 
 ## How It Works
 
-### Detection Strategy
+### Recording Modes
 
-The application uses a hybrid detection approach:
+The application supports two recording modes:
+
+#### Motion Detect Mode (Default)
+
+Uses hybrid presence detection to start/stop recording:
 
 1. **Face Detection**: Checks for faces every N frames (configurable) using OpenCV's DNN face detector or Haar cascades
 2. **Motion Detection**: Continuously monitors motion using background subtraction (MOG2)
@@ -176,12 +187,35 @@ The application uses a hybrid detection approach:
    - Face is detected in the current frame, OR
    - Motion is detected above threshold AND face was detected recently (within last 2 seconds)
 
+#### USB Continuous Mode
+
+Designed for special cameras (e.g., EEG-mounted pupilometry cameras) that should record whenever they're plugged in:
+
+1. **USB Connection Monitoring**: Uses hybrid detection to monitor camera connection:
+   - Primary: Tracks consecutive frame read failures (3 failures = disconnected)
+   - Secondary: Periodic device availability checks using OpenCV VideoCapture
+2. **Automatic Recording**: 
+   - Starts recording immediately when camera is detected as connected
+   - Stops recording immediately when camera is disconnected
+   - No presence detection or buffering - pure USB connection-based control
+3. **Reconnection Support**: Automatically attempts to reconnect if camera is unplugged and plugged back in
+4. **Use Cases**: 
+   - EEG-mounted cameras for pupilometry
+   - Head-mounted cameras that should record continuously during experiments
+   - Any camera where recording should be tied to physical USB connection rather than scene content
+
 ### Recording States
 
+**Motion Detect Mode**:
 - **IDLE**: No user detected, not recording
 - **RECORDING**: User present, actively writing video
 - **BUFFERING**: User left but within buffer timeout, still recording
 - **STOPPING**: Buffer expired, finalizing current video file
+
+**USB Continuous Mode**:
+- **IDLE**: USB camera disconnected, not recording
+- **RECORDING**: USB camera connected, actively writing video
+- No buffering state - recording stops immediately when camera is disconnected
 
 ### LSL Integration
 
@@ -241,11 +275,20 @@ If LSL markers aren't being sent:
 
 ### Poor Detection Performance
 
-If presence detection is unreliable:
+If presence detection is unreliable (motion detect mode only):
 1. Adjust `face_confidence` threshold (lower = more sensitive)
 2. Adjust `motion_threshold` (lower = more sensitive to motion)
 3. Ensure good lighting conditions
 4. Adjust `face_check_interval` for performance vs. accuracy tradeoff
+
+### USB Camera Not Detecting Connection/Disconnection
+
+If USB continuous mode cameras aren't detecting connection changes:
+1. Ensure the camera is properly connected and recognized by the system
+2. Check that the camera device index is correct in the configuration
+3. The system uses frame read failures as the primary detection method - temporary read failures won't trigger disconnection
+4. If camera is unplugged and reconnected, the system will automatically attempt to reconnect (checks every 5 seconds)
+5. Check logs for USB connection state messages
 
 ## Architecture
 

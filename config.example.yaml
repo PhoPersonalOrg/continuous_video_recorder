@@ -1,7 +1,7 @@
 video:
   resolution: [1280, 720]
   fps: 24
-  codec: "mp4v"
+  codec: "avc1"
   quality: "medium"
   
 detection:
@@ -23,13 +23,15 @@ webcam:
   # For single camera, use: device_index: 0
   # For multiple cameras, use: devices: [0, 1]
   device_index: 0  # Legacy single camera support
-  # devices: [0]  # Uncomment and specify list of device indices for multiple cameras
+  # devices: [0, 1]  # Uncomment and specify list of device indices for multiple cameras
   # Optional per-camera settings (uses video defaults if not specified)
   # camera_0:
+  #   mode: "motion_detect"  # Default: uses face/motion detection to start/stop recording
   #   resolution: [1280, 720]
   #   fps: 24
   # camera_1:
-  #   resolution: [1920, 1080]
+  #   mode: "usb_continuous"  # Records continuously while USB camera is connected (for special cameras like EEG-mounted pupilometry)
+  #   resolution: [640, 480]
   #   fps: 30
 
 lsl:

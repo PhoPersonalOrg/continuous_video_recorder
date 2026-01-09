@@ -124,6 +124,13 @@ class ConfigLoader:
             # Default to single camera at index 0
             config["webcam"]["devices"] = [0]
         
+        # Validate per-camera recording modes
+        valid_modes = ["motion_detect", "usb_continuous"]
+        for key, value in webcam_config.items():
+            if key.startswith("camera_") and isinstance(value, dict):
+                if "mode" in value:
+                    assert value["mode"] in valid_modes, f"Invalid recording mode '{value['mode']}' for {key}. Must be one of: {valid_modes}"
+        
         # Validate LSL settings
         assert isinstance(config["lsl"]["enabled"], bool)
         
