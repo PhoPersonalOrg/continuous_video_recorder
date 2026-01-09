@@ -1,30 +1,3 @@
----
-name: Convert to VidGear with Multi-Camera Support
-overview: Convert the continuous video recorder from OpenCV to VidGear, enabling efficient multi-threaded recording from multiple USB cameras simultaneously. Each camera will have its own independent recording session with presence detection.
-todos:
-  - id: "1"
-    content: Add vidgear dependency to pyproject.toml using uv add vidgear
-    status: completed
-  - id: "2"
-    content: Update config.yaml and config_loader.py to support multiple cameras (devices list, per-camera settings)
-    status: completed
-  - id: "3"
-    content: Create src/camera_manager.py with CameraManager class for multi-camera handling using CamGear
-    status: completed
-  - id: "4"
-    content: Refactor src/recorder.py to use WriteGear instead of cv2.VideoWriter (non-compression mode with codec support)
-    status: completed
-  - id: "5"
-    content: Refactor main.py to support multiple cameras with independent state machines, presence detection, and recording per camera
-    status: completed
-  - id: "6"
-    content: Update src/lsl_trigger.py to include camera_id in metadata for multi-camera support
-    status: completed
-  - id: "7"
-    content: Update README.md with VidGear information and multi-camera usage instructions
-    status: completed
----
-
 # Convert Repository to VidGear with Multi-Camera Support
 
 ## Overview

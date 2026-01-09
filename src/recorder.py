@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
+from vidgear.gears import WriteGear
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class VideoRecorder:
         self.min_duration = self.storage_config.get("min_duration", 5)
         self.auto_split_duration = self.storage_config.get("auto_split_duration", 3600)  # Default 1 hour
         
-        self.writer: Optional[cv2.VideoWriter] = None
+        self.writer: Optional[WriteGear] = None
         self.current_file: Optional[Path] = None
         self.start_time: Optional[float] = None
         self.frame_count = 0
@@ -56,28 +57,18 @@ class VideoRecorder:
                 output_dir=self.output_dir
             )
             
-            # Initialize video writer
-            fourcc = cv2.VideoWriter_fourcc(*self.codec)
-            self.writer = cv2.VideoWriter(
-                str(self.current_file),
-                fourcc,
-                self.fps,
-                self.resolution
-            )
-            
-            if not self.writer.isOpened():
+            # Initialize WriteGear in non-compression mode
+            output_params = {"-fourcc": self.codec}
+            try:
+                self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
+            except Exception as e:
                 # Try fallback codec
-                logger.warning(f"Failed to open writer with codec {self.codec}, trying XVID")
-                fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                self.writer = cv2.VideoWriter(
-                    str(self.current_file),
-                    fourcc,
-                    self.fps,
-                    self.resolution
-                )
-                
-                if not self.writer.isOpened():
-                    logger.error("Failed to initialize video writer with fallback codec")
+                logger.warning(f"Failed to open writer with codec {self.codec}, trying XVID: {e}")
+                output_params = {"-fourcc": "XVID"}
+                try:
+                    self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
+                except Exception as e2:
+                    logger.error(f"Failed to initialize video writer with fallback codec: {e2}")
                     self.writer = None
                     return None
             
@@ -128,8 +119,11 @@ class VideoRecorder:
         try:
             duration = time.time() - self.start_time if self.start_time else 0
             
-            # Release writer
-            self.writer.release()
+            # Close writer
+            try:
+                self.writer.close()
+            except Exception as e:
+                logger.warning(f"Error closing writer: {e}")
             self.writer = None
             
             # Check minimum duration
@@ -208,8 +202,11 @@ class VideoRecorder:
         duration = time.time() - self.start_time if self.start_time else 0
         
         try:
-            # Release current writer
-            self.writer.release()
+            # Close current writer
+            try:
+                self.writer.close()
+            except Exception as e:
+                logger.warning(f"Error closing writer during split: {e}")
             self.writer = None
             
             # Save old file if it meets minimum duration
@@ -228,28 +225,18 @@ class VideoRecorder:
                 output_dir=self.output_dir
             )
             
-            # Initialize new video writer
-            fourcc = cv2.VideoWriter_fourcc(*self.codec)
-            self.writer = cv2.VideoWriter(
-                str(self.current_file),
-                fourcc,
-                self.fps,
-                self.resolution
-            )
-            
-            if not self.writer.isOpened():
+            # Initialize new WriteGear writer
+            output_params = {"-fourcc": self.codec}
+            try:
+                self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
+            except Exception as e:
                 # Try fallback codec
-                logger.warning(f"Failed to open writer with codec {self.codec}, trying XVID")
-                fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                self.writer = cv2.VideoWriter(
-                    str(self.current_file),
-                    fourcc,
-                    self.fps,
-                    self.resolution
-                )
-                
-                if not self.writer.isOpened():
-                    logger.error("Failed to initialize video writer with fallback codec during split")
+                logger.warning(f"Failed to open writer with codec {self.codec} during split, trying XVID: {e}")
+                output_params = {"-fourcc": "XVID"}
+                try:
+                    self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
+                except Exception as e2:
+                    logger.error(f"Failed to initialize video writer with fallback codec during split: {e2}")
                     self.writer = None
                     return None
             

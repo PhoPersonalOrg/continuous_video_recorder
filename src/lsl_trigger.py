@@ -60,7 +60,7 @@ class LSLTrigger:
         # Add metadata
         desc = info.desc()
         desc.append_child_value("manufacturer", "ContinuousVideoRecorder")
-        desc.append_child_value("description", "Recording start/stop markers")
+        desc.append_child_value("description", "Recording start/stop markers with multi-camera support")
         
         self.outlet = pylsl.StreamOutlet(info)
         logger.info(f"LSL stream '{stream_name}' created with source_id '{source_id}'")
@@ -69,7 +69,7 @@ class LSLTrigger:
         """Send recording start marker.
         
         Args:
-            metadata: Optional metadata to include (e.g., filename, session_id).
+            metadata: Optional metadata to include (e.g., camera_id, filename, session_id).
         """
         if not self.enabled or self.outlet is None:
             return
@@ -93,7 +93,7 @@ class LSLTrigger:
         """Send recording stop marker.
         
         Args:
-            metadata: Optional metadata to include (e.g., filename, session_id, duration).
+            metadata: Optional metadata to include (e.g., camera_id, filename, session_id, duration).
         """
         if not self.enabled or self.outlet is None:
             return

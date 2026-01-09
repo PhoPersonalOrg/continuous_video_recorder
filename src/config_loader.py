@@ -31,7 +31,8 @@ class ConfigLoader:
             "auto_split_duration": 3600,  # 1 hour in seconds
         },
         "webcam": {
-            "device_index": 0,
+            "device_index": 0,  # Legacy single camera support
+            "devices": [0],  # List of camera device indices
         },
         "lsl": {
             "enabled": True,
@@ -106,7 +107,21 @@ class ConfigLoader:
         assert config["storage"]["auto_split_duration"] > 0
         
         # Validate webcam settings
-        assert isinstance(config["webcam"]["device_index"], int) and config["webcam"]["device_index"] >= 0
+        webcam_config = config["webcam"]
+        # Support both legacy device_index and new devices list
+        if "device_index" in webcam_config:
+            assert isinstance(webcam_config["device_index"], int) and webcam_config["device_index"] >= 0
+        if "devices" in webcam_config:
+            assert isinstance(webcam_config["devices"], list) and len(webcam_config["devices"]) > 0
+            for device_idx in webcam_config["devices"]:
+                assert isinstance(device_idx, int) and device_idx >= 0
+        # Ensure at least one camera is configured
+        if "devices" not in webcam_config and "device_index" in webcam_config:
+            # Convert legacy device_index to devices list
+            config["webcam"]["devices"] = [webcam_config["device_index"]]
+        elif "devices" not in webcam_config:
+            # Default to single camera at index 0
+            config["webcam"]["devices"] = [0]
         
         # Validate LSL settings
         assert isinstance(config["lsl"]["enabled"], bool)
