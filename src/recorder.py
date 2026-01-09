@@ -29,6 +29,7 @@ class VideoRecorder:
         self.output_dir = Path(self.storage_config.get("output_dir", "./recordings"))
         self.min_duration = self.storage_config.get("min_duration", 5)
         self.auto_split_duration = self.storage_config.get("auto_split_duration", 3600)  # Default 1 hour
+        self.filename_format = self.storage_config.get("filename_format", None)
         
         self.writer: Optional[WriteGear] = None
         self.current_file: Optional[Path] = None
@@ -51,11 +52,7 @@ class VideoRecorder:
         try:
             # Generate filename
             from src.utils import generate_timestamped_filename
-            self.current_file = generate_timestamped_filename(
-                prefix="Record",
-                extension="mp4",
-                output_dir=self.output_dir
-            )
+            self.current_file = generate_timestamped_filename(prefix="Record", extension="mp4", output_dir=self.output_dir, filename_format=self.filename_format)
             
             # Initialize WriteGear in non-compression mode
             output_params = {"-fourcc": self.codec}
@@ -219,11 +216,7 @@ class VideoRecorder:
             
             # Start new recording immediately
             from src.utils import generate_timestamped_filename
-            self.current_file = generate_timestamped_filename(
-                prefix="Record",
-                extension="mp4",
-                output_dir=self.output_dir
-            )
+            self.current_file = generate_timestamped_filename(prefix="Record", extension="mp4", output_dir=self.output_dir, filename_format=self.filename_format)
             
             # Initialize new WriteGear writer
             output_params = {"-fourcc": self.codec}

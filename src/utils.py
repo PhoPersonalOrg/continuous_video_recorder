@@ -82,19 +82,38 @@ def ensure_directory(path: Path) -> Path:
     return path
 
 
-def generate_timestamped_filename(prefix: str = "Record", extension: str = "mp4", output_dir: Optional[Path] = None) -> Path:
+def generate_timestamped_filename(prefix: str = "Record", extension: str = "mp4", output_dir: Optional[Path] = None, filename_format: Optional[str] = None) -> Path:
     """Generate a timestamped filename.
     
     Args:
-        prefix: Filename prefix.
-        extension: File extension (without dot).
+        prefix: Filename prefix (used only if filename_format is None).
+        extension: File extension (without dot, used only if filename_format is None or doesn't include extension).
         output_dir: Output directory. If None, returns just filename.
+        filename_format: Optional format string with placeholders: %YYYY%, %MM%, %DD%, %HH%, %MIN%, %SS%.
+                        If None, uses legacy format: {prefix}_{timestamp}.{extension}
         
     Returns:
         Path to the generated filename.
     """
-    timestamp = datetime.now().strftime("%Y-%m-%dT%H%M%S")
-    filename = f"{prefix}_{timestamp}.{extension}"
+    now = datetime.now()
+    
+    if filename_format:
+        # Parse format string and replace placeholders
+        filename = filename_format
+        filename = filename.replace("%YYYY%", now.strftime("%Y"))
+        filename = filename.replace("%MM%", now.strftime("%m"))
+        filename = filename.replace("%DD%", now.strftime("%d"))
+        filename = filename.replace("%HH%", now.strftime("%H"))
+        filename = filename.replace("%MIN%", now.strftime("%M"))
+        filename = filename.replace("%SS%", now.strftime("%S"))
+        
+        # Add extension if not present
+        if "." not in filename:
+            filename = f"{filename}.{extension}"
+    else:
+        # Legacy behavior for backward compatibility
+        timestamp = now.strftime("%Y-%m-%dT%H%M%S")
+        filename = f"{prefix}_{timestamp}.{extension}"
     
     if output_dir:
         output_dir = ensure_directory(Path(output_dir))

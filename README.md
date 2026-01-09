@@ -108,6 +108,7 @@ The application uses a `config.yaml` file for configuration. A default configura
 - `auto_split_duration`: Auto-split recordings every N seconds (default: 3600 = 1 hour)
 - `camera_output_dirs`: Optional per-camera output directories (dictionary mapping camera_id to path)
   - Example: `{0: "M:\\Recordings\\Camera0", 1: "M:\\Recordings\\Camera1"}`
+- `filename_format`: Filename format for recorded videos that is populated with the recording start datetime (default: "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%")
 
 ### Webcam Settings
 

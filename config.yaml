@@ -1,6 +1,6 @@
 video:
-  resolution: [1280, 720]
-  fps: 24
+  resolution: [640, 480]
+  fps: 30
   codec: "mp4v"
   quality: "medium"
   
@@ -13,10 +13,11 @@ buffer:
   absence_timeout: 35  # seconds
   
 storage:
-  output_dir: "E:/RECORDINGS/VidGearCam" #  "./recordings"  # Change this to your desired output directory
+  output_dir: "M:/ScreenRecordings/REC_continuous_video_recorder" #  "./recordings"  # Change this to your desired output directory
   min_duration: 5  # minimum seconds to save a video
   auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
-  
+  filename_format: "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%"  # Filename format with datetime placeholders: %YYYY%, %MM%, %DD%, %HH%, %MIN%, %SS%
+
 webcam:
   # Support both single camera (device_index) and multiple cameras (devices)
   # For single camera, use: device_index: 0

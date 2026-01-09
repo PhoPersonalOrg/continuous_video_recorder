@@ -29,6 +29,7 @@ class ConfigLoader:
             "output_dir": "M:\\ScreenRecordings\\EyeTrackerVR_Recordings",
             "min_duration": 5,
             "auto_split_duration": 3600,  # 1 hour in seconds
+            "filename_format": "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%",
         },
         "webcam": {
             "device_index": 0,  # Legacy single camera support
