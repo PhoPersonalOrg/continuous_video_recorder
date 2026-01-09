@@ -1,0 +1,12 @@
+{
+  "setup-worktree-unix": [
+    "uv sync --all-extras",
+    "source .venv/bin/activate",
+    "cp $ROOT_WORKTREE_PATH/.env .env"
+  ],
+  "setup-worktree-windows": [
+    "uv sync --all-extras",
+    ".venv/Scripts/Activate.ps1",
+    "copy %ROOT_WORKTREE_PATH%\\.env .env"
+  ]
+}
