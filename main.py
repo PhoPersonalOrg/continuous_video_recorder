@@ -418,6 +418,82 @@ class ContinuousVideoRecorder:
             self.shutdown()
 
 
+def list_cameras(max_check: int = 10) -> None:
+    """List all available cameras with their information.
+    
+    Args:
+        max_check: Maximum device index to check.
+    """
+    from src.camera_manager import CameraManager
+    from src.config_loader import ConfigLoader
+    
+    # Load minimal config for camera manager
+    config = ConfigLoader.load_config()
+    camera_manager = CameraManager(config)
+    
+    cameras = camera_manager.list_cameras_with_info(max_check=max_check)
+    
+    if not cameras:
+        print("No cameras found.")
+        return
+    
+    print(f"\nFound {len(cameras)} camera(s):\n")
+    
+    # Determine if we have VID/PID info to show
+    has_vid_pid = any(cam.get("vid") or cam.get("pid") for cam in cameras)
+    
+    if has_vid_pid:
+        # Enhanced format with VID/PID
+        print(f"{'Index':<8} {'Device Name':<35} {'VID:PID':<20} {'Resolution':<18} {'Backend':<15}")
+        print("-" * 100)
+        
+        for cam in cameras:
+            index = cam["index"]
+            name = cam.get("name") or "Unknown"
+            # Truncate long names
+            if len(name) > 33:
+                name = name[:30] + "..."
+            
+            vid = cam.get("vid")
+            pid = cam.get("pid")
+            if vid and pid:
+                vid_pid = f"VID:{vid} PID:{pid}"
+            elif vid:
+                vid_pid = f"VID:{vid}"
+            elif pid:
+                vid_pid = f"PID:{pid}"
+            else:
+                vid_pid = "Unknown"
+            
+            resolution = f"{cam['resolution'][0]}x{cam['resolution'][1]}" if cam.get("resolution") else "Unknown"
+            backend = cam.get("backend") or "Default"
+            
+            print(f"{index:<8} {name:<35} {vid_pid:<20} {resolution:<18} {backend:<15}")
+    else:
+        # Standard format without VID/PID
+        print(f"{'Index':<8} {'Device Name':<40} {'Resolution':<20} {'Backend':<15}")
+        print("-" * 85)
+        
+        for cam in cameras:
+            index = cam["index"]
+            name = cam.get("name") or "Unknown"
+            # Truncate long names
+            if len(name) > 38:
+                name = name[:35] + "..."
+            
+            resolution = f"{cam['resolution'][0]}x{cam['resolution'][1]}" if cam.get("resolution") else "Unknown"
+            backend = cam.get("backend") or "Default"
+            
+            print(f"{index:<8} {name:<40} {resolution:<20} {backend:<15}")
+    
+    print("\nTo use a camera, set its index in your config.yaml:")
+    print("  webcam:")
+    print("    device_index: 0  # For single camera")
+    print("    # OR")
+    print("    devices: [0, 1]  # For multiple cameras")
+    print("\n")
+
+
 def main():
     """Main entry point."""
     import argparse
@@ -429,8 +505,23 @@ def main():
         default=None,
         help="Path to configuration file (default: config.yaml in current directory)"
     )
+    parser.add_argument(
+        "--list-cameras",
+        action="store_true",
+        help="List all available cameras and exit"
+    )
+    parser.add_argument(
+        "--max-camera-check",
+        type=int,
+        default=10,
+        help="Maximum camera index to check when listing cameras (default: 10)"
+    )
     
     args = parser.parse_args()
+    
+    if args.list_cameras:
+        list_cameras(max_check=args.max_camera_check)
+        return
     
     recorder = ContinuousVideoRecorder(config_path=args.config)
     recorder.run()

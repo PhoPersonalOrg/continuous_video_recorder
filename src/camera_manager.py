@@ -177,6 +177,267 @@ class CameraManager:
                 continue
         return available
     
+    def list_cameras_with_info(self, max_check: int = 10) -> List[Dict[str, Any]]:
+        """List all available cameras with their names and identifiers.
+        
+        Uses enhanced methods to get actual device names:
+        1. Try cv2-enumerate-cameras package (provides name, VID, PID)
+        2. Fallback to WMI on Windows (provides device names)
+        3. Fallback to basic OpenCV enumeration
+        
+        Args:
+            max_check: Maximum device index to check.
+            
+        Returns:
+            List of dictionaries with camera information:
+            - index: Device index (OpenCV index)
+            - name: Camera name (actual device name if available)
+            - vid: Vendor ID (if available)
+            - pid: Product ID (if available)
+            - backend: Backend used
+            - resolution: Default resolution (if available)
+        """
+        import platform
+        
+        # Try cv2-enumerate-cameras first (best method)
+        try:
+            from cv2_enumerate_cameras import enumerate_cameras  # type: ignore
+            cameras = self._list_cameras_cv2_enumerate(max_check)
+            if cameras:
+                logger.info("Using cv2-enumerate-cameras for camera identification")
+                return cameras
+        except ImportError:
+            logger.debug("cv2-enumerate-cameras not available, trying fallback methods")
+        except Exception as e:
+            logger.warning(f"cv2-enumerate-cameras failed: {e}, trying fallback methods")
+        
+        # Fallback to WMI on Windows
+        if platform.system() == "Windows":
+            try:
+                cameras = self._list_cameras_wmi(max_check)
+                if cameras:
+                    logger.info("Using WMI for camera identification")
+                    return cameras
+            except ImportError:
+                logger.debug("WMI package not available")
+            except Exception as e:
+                logger.warning(f"WMI camera enumeration failed: {e}, using basic method")
+        
+        # Final fallback: basic OpenCV enumeration
+        return self._list_cameras_basic(max_check)
+    
+    def _list_cameras_cv2_enumerate(self, max_check: int = 10) -> List[Dict[str, Any]]:
+        """List cameras using cv2-enumerate-cameras package.
+        
+        Args:
+            max_check: Maximum device index to check.
+            
+        Returns:
+            List of camera info dictionaries.
+        """
+        from cv2_enumerate_cameras import enumerate_cameras  # type: ignore
+        
+        cameras = []
+        enumerated = enumerate_cameras()
+        
+        # Create a mapping of OpenCV index to enumerated camera info
+        index_to_camera = {}
+        for cam in enumerated:
+            if cam.index < max_check:
+                index_to_camera[cam.index] = cam
+        
+        # Verify each camera works and get additional info
+        for index, cam_info in index_to_camera.items():
+            try:
+                cap = cv2.VideoCapture(index, cam_info.backend if hasattr(cam_info, 'backend') else cv2.CAP_ANY)
+                if not cap.isOpened():
+                    continue
+                
+                # Verify camera works
+                ret, _ = cap.read()
+                if not ret:
+                    cap.release()
+                    continue
+                
+                camera_info = {
+                    "index": index,
+                    "name": cam_info.name if hasattr(cam_info, 'name') and cam_info.name else f"Camera {index}",
+                    "vid": f"{cam_info.vid:04X}" if hasattr(cam_info, 'vid') and cam_info.vid else None,
+                    "pid": f"{cam_info.pid:04X}" if hasattr(cam_info, 'pid') and cam_info.pid else None,
+                    "backend": getattr(cam_info, 'backend_name', None) or "Unknown",
+                    "resolution": None,
+                }
+                
+                # Get resolution
+                try:
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    if width > 0 and height > 0:
+                        camera_info["resolution"] = (width, height)
+                except Exception:
+                    pass
+                
+                cameras.append(camera_info)
+                cap.release()
+                
+            except Exception as e:
+                logger.debug(f"Failed to verify camera {index} from cv2-enumerate-cameras: {e}")
+                continue
+        
+        return cameras
+    
+    def _list_cameras_wmi(self, max_check: int = 10) -> List[Dict[str, Any]]:
+        """List cameras using WMI on Windows.
+        
+        Args:
+            max_check: Maximum device index to check.
+            
+        Returns:
+            List of camera info dictionaries.
+        """
+        try:
+            import wmi  # type: ignore
+        except ImportError:
+            return []
+        
+        w = wmi.WMI()
+        camera_devices = []
+        
+        # Find camera devices in WMI
+        for device in w.Win32_PnPEntity():
+            name = getattr(device, 'Name', '')
+            if name and ('camera' in name.lower() or 'webcam' in name.lower() or 'video' in name.lower() or 'imaging' in name.lower()):
+                camera_devices.append({
+                    'name': name,
+                    'description': getattr(device, 'Description', ''),
+                    'device_id': getattr(device, 'DeviceID', ''),
+                })
+        
+        # Match WMI devices to OpenCV indices (heuristic approach)
+        cameras = []
+        for i in range(max_check):
+            try:
+                cap = cv2.VideoCapture(i)
+                if not cap.isOpened():
+                    continue
+                
+                ret, _ = cap.read()
+                if not ret:
+                    cap.release()
+                    continue
+                
+                camera_info = {
+                    "index": i,
+                    "name": None,
+                    "vid": None,
+                    "pid": None,
+                    "backend": None,
+                    "resolution": None,
+                }
+                
+                # Try to match to WMI device (simple heuristic: use first unmatched camera device)
+                # This is imperfect but better than nothing
+                if camera_devices:
+                    # Use first available device name (could be improved with better matching)
+                    camera_info["name"] = camera_devices[min(i, len(camera_devices) - 1)]['name']
+                
+                # Try DirectShow backend
+                try:
+                    backend = cv2.CAP_DSHOW
+                    cap_dshow = cv2.VideoCapture(i, backend)
+                    if cap_dshow.isOpened():
+                        camera_info["backend"] = "DirectShow"
+                        cap_dshow.release()
+                    else:
+                        camera_info["backend"] = "Default"
+                except Exception:
+                    camera_info["backend"] = "Default"
+                
+                # Get resolution
+                try:
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    if width > 0 and height > 0:
+                        camera_info["resolution"] = (width, height)
+                except Exception:
+                    pass
+                
+                if camera_info["name"] is None:
+                    camera_info["name"] = f"Camera {i}"
+                
+                cameras.append(camera_info)
+                cap.release()
+                
+            except Exception:
+                continue
+        
+        return cameras
+    
+    def _list_cameras_basic(self, max_check: int = 10) -> List[Dict[str, Any]]:
+        """Basic camera enumeration using OpenCV only (fallback method).
+        
+        Args:
+            max_check: Maximum device index to check.
+            
+        Returns:
+            List of camera info dictionaries.
+        """
+        cameras = []
+        import platform
+        
+        for i in range(max_check):
+            try:
+                cap = cv2.VideoCapture(i)
+                if not cap.isOpened():
+                    continue
+                
+                ret, _ = cap.read()
+                if not ret:
+                    cap.release()
+                    continue
+                
+                camera_info = {
+                    "index": i,
+                    "name": None,
+                    "vid": None,
+                    "pid": None,
+                    "backend": None,
+                    "resolution": None,
+                }
+                
+                # Try to get backend info
+                if platform.system() == "Windows":
+                    try:
+                        backend = cv2.CAP_DSHOW
+                        cap_dshow = cv2.VideoCapture(i, backend)
+                        if cap_dshow.isOpened():
+                            camera_info["backend"] = "DirectShow"
+                            cap_dshow.release()
+                        else:
+                            camera_info["backend"] = "Default"
+                    except Exception:
+                        camera_info["backend"] = "Default"
+                elif platform.system() == "Linux":
+                    camera_info["backend"] = "V4L2"
+                
+                # Get resolution
+                try:
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    if width > 0 and height > 0:
+                        camera_info["resolution"] = (width, height)
+                except Exception:
+                    pass
+                
+                camera_info["name"] = f"Camera {i}"
+                cameras.append(camera_info)
+                cap.release()
+                
+            except Exception:
+                continue
+        
+        return cameras
+    
     def is_camera_connected(self, device_index: int) -> bool:
         """Check if a camera device is connected and available.
         

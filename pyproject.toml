@@ -11,4 +11,10 @@ dependencies = [
     "pylsl>=1.16.0",
     "vidgear>=0.3.3",
     "setuptools>=65.0.0",
+    "cv2-enumerate-cameras>=0.1.0",
+]
+
+[project.optional-dependencies]
+windows = [
+    "WMI>=1.5.1",
 ]

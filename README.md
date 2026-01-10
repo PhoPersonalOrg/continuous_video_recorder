@@ -33,7 +33,10 @@ uv sync --all-extras
 pip install -e .
 
 # Or install dependencies directly
-pip install vidgear opencv-python numpy pyyaml pylsl
+pip install vidgear opencv-python numpy pyyaml pylsl cv2-enumerate-cameras
+
+# For enhanced camera identification on Windows (optional)
+pip install WMI
 ```
 
 **Note**: This application uses [VidGear](https://github.com/abhitronix/vidgear) for efficient multi-threaded camera capture and video recording. VidGear provides better performance and resource management compared to direct OpenCV usage, especially when recording from multiple cameras simultaneously.
@@ -54,14 +57,24 @@ cp config.example.yaml config.yaml
 
 **Location**: Place `config.yaml` in the root directory of the project (same directory as `main.py`).
 
-### 2. Edit Configuration
+### 2. Identify Your Camera(s)
+
+Before configuring, identify which camera indices correspond to your cameras:
+
+```bash
+python main.py --list-cameras
+```
+
+This will display all available cameras with their indices, names (if available), and resolutions. Use this information to set the correct `device_index` or `devices` in your configuration.
+
+### 3. Edit Configuration
 
 Edit `config.yaml` to customize settings:
-- **Camera**: Set `webcam.device_index` to your camera index (usually 0, 1, or 2)
+- **Camera**: Set `webcam.device_index` to your camera index (from the list above)
 - **Output Directory**: Change `storage.output_dir` to where you want videos saved
 - **Detection**: Adjust `detection.face_confidence` and `detection.motion_threshold` if needed
 
-### 3. Run the Application
+### 4. Run the Application
 
 ```bash
 # Using default config.yaml in current directory
@@ -71,7 +84,7 @@ python main.py
 python main.py --config /path/to/your/config.yaml
 ```
 
-### 4. Start Recording
+### 5. Start Recording
 
 **Recording starts automatically** when the application detects your presence (face or motion). Simply:
 1. Run the application
@@ -167,9 +180,55 @@ python main.py
 python main.py --config /path/to/custom_config.yaml
 ```
 
+### List Available Cameras
+
+To see all available cameras with their indices and information:
+
+```bash
+python main.py --list-cameras
+```
+
+This will display:
+- **Camera index** (use this in your config)
+- **Camera name** (if available, otherwise generic name)
+- **Default resolution** (helps identify cameras)
+- **Backend used**
+
+Example output (with enhanced identification):
+```
+Found 3 camera(s):
+
+Index    Device Name                    VID:PID            Resolution      Backend        
+----------------------------------------------------------------------------------------------------
+0        Logitech HD Pro Webcam C920    VID:046D PID:082D  1280x720        DirectShow     
+1        USB Camera                     VID:0C45 PID:6712  640x480         DirectShow     
+6        Generic USB Camera             Unknown            Unknown         DirectShow     
+
+To use a camera, set its index in your config.yaml:
+  webcam:
+    device_index: 0  # For single camera
+    # OR
+    devices: [0, 1]  # For multiple cameras
+```
+
+**Enhanced Camera Identification:**
+The application uses multiple methods to identify cameras:
+- **cv2-enumerate-cameras package**: Provides actual device names, Vendor ID (VID), and Product ID (PID) - most reliable method
+- **WMI (Windows)**: Falls back to Windows Management Instrumentation to get device names on Windows
+- **Basic enumeration**: Final fallback if enhanced methods aren't available
+
+**Tips for identifying cameras:**
+- **Device names**: Actual camera model names are shown when available (e.g., "Logitech HD Pro Webcam C920")
+- **VID/PID**: Unique hardware identifiers help distinguish identical camera models
+- **By resolution**: Different cameras often have different default resolutions
+- **By unplugging**: Unplug a camera, run `--list-cameras` again, and see which index disappears
+- **Note**: Camera indices can change after system reboot or when cameras are reconnected. Always verify indices with `--list-cameras` if you're unsure.
+
 ### Command Line Options
 
 - `--config`: Path to configuration file (default: `config.yaml` in current directory)
+- `--list-cameras`: List all available cameras and exit
+- `--max-camera-check`: Maximum camera index to check when listing (default: 10)
 
 ## How It Works
 
@@ -252,11 +311,13 @@ Logs are saved in the `recordings/logs/` directory with timestamped filenames.
 ### Camera Not Found
 
 If the application can't find your camera:
-1. Check that the camera is connected and not in use by another application
-2. For single camera: Adjust the `device_index` in `config.yaml` (try 0, 1, 2, etc.)
-3. For multiple cameras: Verify all device indices in the `devices` list are correct
-4. The application will attempt to auto-detect available cameras during initialization
-5. Check the logs for camera initialization messages - each camera should show its device index and resolution
+1. **List available cameras first**: Run `python main.py --list-cameras` to see all available cameras and their indices
+2. Check that the camera is connected and not in use by another application
+3. For single camera: Adjust the `device_index` in `config.yaml` to match the index from `--list-cameras`
+4. For multiple cameras: Verify all device indices in the `devices` list match the indices from `--list-cameras`
+5. The application will attempt to auto-detect available cameras during initialization
+6. Check the logs for camera initialization messages - each camera should show its device index and resolution
+7. **Note**: Camera indices can change when cameras are plugged/unplugged or after system reboot. Use `--list-cameras` to verify indices before each session if needed
 
 ### Video Codec Issues
 
