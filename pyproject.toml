@@ -12,6 +12,10 @@ dependencies = [
     "vidgear>=0.3.3",
     "setuptools>=65.0.0",
     "cv2-enumerate-cameras>=0.1.0",
+    "pandas>=2.3.3",
+    "pyaudio>=0.2.14",
+    "pillow>=11.3.0",
+    "pyqt6>=6.10.2",
 ]
 
 [project.optional-dependencies]

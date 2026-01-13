@@ -25,14 +25,28 @@ webcam:
   # For single camera, use: device_index: 0
   # For multiple cameras, use: devices: [0, 1]
   devices: [0, 1]  # Record from cameras at indices 0 and 1
+  # camera_0:
+  #   mode: "motion_detect"  # Default: uses face/motion detection
+  #   resolution: [1280, 720]
+  #   fps: 24
+  # camera_1:
+  #   mode: "usb_continuous"  # Records continuously while USB connected
+  #   resolution: [1920, 1080]
+  #   fps: 30
+
   camera_0:
+    # name: Optional[str]  # Optional: camera name for identification (can be omitted)
+    name: "HD Pro Webcam C920"
     mode: "motion_detect"  # Default: uses face/motion detection
     resolution: [1280, 720]
     fps: 24
   camera_1:
+    # name: Optional[str]  # Optional: camera name for identification (can be omitted)
+    name: "USB Camera"
     mode: "usb_continuous"  # Records continuously while USB connected
     resolution: [1920, 1080]
     fps: 30
+
 
   # device_index: 0  # Legacy single camera support
   # devices: [0]  # Uncomment and specify list of device indices for multiple cameras

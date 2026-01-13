@@ -3,6 +3,10 @@ import logging
 import cv2
 from typing import Dict, Any, Optional, List, Tuple
 from vidgear.gears import CamGear
+import numpy as np
+import pandas as pd
+from cv2_enumerate_cameras import enumerate_cameras
+
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +464,8 @@ class CameraManager:
             
             cameras.append(camera_info)
             cap.release()
-        
+        ## END for cam_info in enumerated_cams...
+
         return cameras
     
     def _list_cameras_wmi(self, max_check: int = 10) -> List[Dict[str, Any]]:
@@ -662,6 +667,70 @@ class CameraManager:
                         logger.debug(f"Error releasing DirectShow camera {i}: {e}")
         
         return cameras
+
+
+    @classmethod
+    def try_find_cams(cls, cam_names: List[str] = ['HD Pro Webcam C920', "USB Camera"]) -> pd.DataFrame:
+        """ my personal function that requires `cv2_enumerate_cameras`, but works
+
+
+        devices = config['webcam'].get('devices', [0])
+        device_labels = [f"camera_{i}" for i in devices]
+        device_camera_configs = [config['webcam'][f"camera_{i}"] for i in devices]
+
+        device_camera_names = [a_config['name'] for i, a_config in enumerate(device_camera_configs)]
+
+        found_cams_df: pd.DataFrame = camera_manager.try_find_cams(cam_names=device_camera_names)
+        target_open_cv_indicies = found_cams_df['open_cv_index'].to_numpy().astype(int)
+        target_open_cv_indicies
+
+        target_large_open_cv_indicies = found_cams_df['index'].astype(int).to_numpy()
+        target_large_open_cv_indicies
+
+        num_max_check: int = int(np.nanmax(target_open_cv_indicies) + 1)
+        num_max_check
+
+
+        """
+        # found_cams = []
+        found_cams = []
+        found_cams_dict = {}
+
+        col_names = ['index', 'name', 'path', 'vid', 'pid', 'backend']
+
+        for camera_info in enumerate_cameras():
+            print(f'{camera_info.index}: {camera_info.name}')
+            if camera_info.name in cam_names:
+                should_add: bool = False
+                camera_info_record = {k:getattr(camera_info, k) for k in col_names}
+                extant_found_cam_record = found_cams_dict.get(camera_info.name, None)
+                if extant_found_cam_record is not None:
+                    ## compare and only add the newest
+                    is_new_record_index_greater = (extant_found_cam_record['index'] < camera_info_record['index'])
+                    if is_new_record_index_greater:
+                        should_add = True
+                else:
+                    should_add = True
+
+                if should_add:
+                    found_cams_dict[camera_info.name] = camera_info_record
+                    found_cams.append(camera_info_record)
+                
+                # found_cams.append(camera_info_record)
+                # found_cams.append(camera_info)
+
+        # 1400: HD Pro Webcam C920
+        # 700: HD Pro Webcam C920
+        # 701: Basler GenICam Source
+        # 702: Basler GenICam Source 2
+        # 703: Basler GenICam Source 3
+        # 704: Basler GenICam Source 4
+        # 705: OBS Virtual Camera
+
+        found_cams: pd.DataFrame = pd.DataFrame(found_cams)
+        found_cams = found_cams.sort_values(by='index', ascending=True).reset_index(drop=True)
+        found_cams['open_cv_index'] = found_cams.index.astype(int)
+        return found_cams
 
 
     
