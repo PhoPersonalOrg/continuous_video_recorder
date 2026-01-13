@@ -44,6 +44,12 @@ class ConfigLoader:
             "marker_stop": "RECORDING_STOP",
             "include_metadata": True,
         },
+        "preview": {
+            "enabled": False,
+            "update_interval_ms": 30,
+            "show_timestamp": True,
+            "preview_resolution": [640, 480],  # Optional downscaling for preview
+        },
     }
     
     @classmethod
@@ -133,6 +139,14 @@ class ConfigLoader:
         
         # Validate LSL settings
         assert isinstance(config["lsl"]["enabled"], bool)
+        
+        # Validate preview settings
+        assert isinstance(config["preview"]["enabled"], bool)
+        assert config["preview"]["update_interval_ms"] > 0
+        assert isinstance(config["preview"]["show_timestamp"], bool)
+        if config["preview"]["preview_resolution"]:
+            assert isinstance(config["preview"]["preview_resolution"], list) and len(config["preview"]["preview_resolution"]) == 2
+            assert all(isinstance(x, int) and x > 0 for x in config["preview"]["preview_resolution"])
         
         logger.info("Configuration validated successfully")
 

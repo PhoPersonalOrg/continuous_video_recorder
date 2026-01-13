@@ -11,6 +11,7 @@ from src.detector import PresenceDetector
 from src.recorder import VideoRecorder
 from src.lsl_trigger import LSLTrigger
 from src.camera_manager import CameraManager
+from src.preview_window import CameraPreviewManager
 from src.utils import setup_logging, setup_signal_handlers, format_duration
 
 
@@ -63,12 +64,19 @@ class ContinuousVideoRecorder:
         # Shared LSL trigger (with camera_id in metadata)
         self.lsl_trigger = LSLTrigger(self.config)
         
+        # Preview manager (optional, enabled via config)
+        self.preview_manager: Optional[CameraPreviewManager] = None
+        preview_config = self.config.get("preview", {})
+        if preview_config.get("enabled", False):
+            self.preview_manager = CameraPreviewManager(self.config)
+        
         # Shutdown flag
         self.shutdown_requested = False
         
         # Setup signal handlers
         setup_signal_handlers(self.shutdown)
     
+
     def initialize_cameras(self) -> bool:
         """Initialize all cameras and per-camera components.
         
@@ -129,8 +137,15 @@ class ContinuousVideoRecorder:
             
             self.logger.info(f"Initialized components for camera {camera_id} (mode: {recording_mode})")
         
+        # Start preview windows if enabled
+        if self.preview_manager:
+            camera_ids = list(self.camera_manager.cameras.keys())
+            self.preview_manager.start_preview(camera_ids)
+            self.logger.info(f"Preview windows started for {len(camera_ids)} camera(s)")
+        
         return True
     
+
     def shutdown(self) -> None:
         """Handle graceful shutdown."""
         self.logger.info("Shutting down...")
@@ -144,10 +159,15 @@ class ContinuousVideoRecorder:
         # Cleanup cameras
         self.camera_manager.shutdown()
         
+        # Cleanup preview windows
+        if self.preview_manager:
+            self.preview_manager.stop_preview()
+        
         # Cleanup LSL
         self.lsl_trigger.close()
         self.logger.info("Shutdown complete")
     
+
     def _start_recording(self, camera_id: int) -> None:
         """Start recording session for specific camera.
         
@@ -175,6 +195,7 @@ class ContinuousVideoRecorder:
         else:
             self.logger.error(f"Camera {camera_id}: Failed to start recording")
     
+
     def _stop_recording(self, camera_id: int) -> None:
         """Stop recording session for specific camera.
         
@@ -203,6 +224,7 @@ class ContinuousVideoRecorder:
         else:
             self.logger.info(f"Camera {camera_id}: Recording stopped (file not saved - too short)")
     
+
     def _enter_buffering(self, camera_id: int) -> None:
         """Enter buffering state for specific camera (user left but within timeout).
         
@@ -214,6 +236,7 @@ class ContinuousVideoRecorder:
             self.buffer_start_times[camera_id] = time.time()
             self.logger.debug(f"Camera {camera_id}: Entered buffering state")
     
+
     def _check_usb_connection(self, camera_id: int) -> bool:
         """Check USB connection status for a camera.
         
@@ -225,6 +248,7 @@ class ContinuousVideoRecorder:
         """
         return self.camera_manager.check_usb_connection(camera_id)
     
+
     def run(self) -> None:
         """Main application loop."""
         self.logger.info("Starting continuous video recorder...")
@@ -254,6 +278,10 @@ class ContinuousVideoRecorder:
                     
                     # Read frame from camera
                     frame = self.camera_manager.read_frame(camera_id)
+                    
+                    # Update preview window if enabled
+                    if self.preview_manager and frame is not None:
+                        self.preview_manager.update_frame(camera_id, frame)
                     
                     # Branch logic based on recording mode
                     if recording_mode == "usb_continuous":

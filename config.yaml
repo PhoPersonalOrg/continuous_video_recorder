@@ -66,3 +66,11 @@ lsl:
   marker_start: "RECORDING_START"
   marker_stop: "RECORDING_STOP"
   include_metadata: true  # Include filename, session ID in marker metadata
+
+
+preview:
+  enabled: true
+  update_interval_ms: 30  # Frame update interval (~33 FPS)
+  show_timestamp: true    # Show timestamp overlay on frames
+  preview_resolution: [640, 480]  # Optional: downscale preview (leave empty for full resolution)
+  
