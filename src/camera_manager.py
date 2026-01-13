@@ -199,13 +199,18 @@ class CameraManager:
         """
         import platform
         
-        # Try cv2-enumerate-cameras first (best method)
+        # Try cv2-enumerate-cameras first (best method for device names)
+        # Then merge with standard OpenCV enumeration to get correct indices
         try:
             from cv2_enumerate_cameras import enumerate_cameras  # type: ignore
-            cameras = self._list_cameras_cv2_enumerate(max_check)
-            if cameras:
-                logger.info("Using cv2-enumerate-cameras for camera identification")
-                return cameras
+            enumerated_cams = list(enumerate_cameras())
+            if enumerated_cams:
+                # Get standard OpenCV cameras and try to match
+                standard_cameras = self._list_cameras_basic(max_check)
+                cameras = self._merge_camera_info(enumerated_cams, standard_cameras)
+                if cameras:
+                    logger.info("Using cv2-enumerate-cameras with standard OpenCV indices")
+                    return cameras
         except ImportError:
             logger.debug("cv2-enumerate-cameras not available, trying fallback methods")
         except Exception as e:
@@ -226,63 +231,235 @@ class CameraManager:
         # Final fallback: basic OpenCV enumeration
         return self._list_cameras_basic(max_check)
     
+    def _merge_camera_info(self, enumerated_cams: List[Any], standard_cameras: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge cv2-enumerate-cameras info with standard OpenCV camera indices.
+        
+        For each standard OpenCV index, tries to find matching enumerated camera
+        by testing if both can be opened and comparing properties.
+        
+        Args:
+            enumerated_cams: List of camera info from cv2-enumerate-cameras
+            standard_cameras: List of standard OpenCV cameras (with indices 0-10)
+            
+        Returns:
+            Merged list with device names from enumerated_cams and standard OpenCV indices.
+        """
+        merged = []
+        used_enumerated = set()
+        
+        # For each standard camera, try to find matching enumerated camera
+        for std_cam in standard_cameras:
+            std_index = std_cam["index"]
+            matched_enum_cam = None
+            
+            # Try to open standard camera and get its properties
+            # Try default backend first, then DirectShow
+            std_cap = None
+            try:
+                std_cap = cv2.VideoCapture(std_index)
+                if not std_cap.isOpened():
+                    # Try DirectShow as fallback
+                    std_cap = cv2.VideoCapture(std_index, cv2.CAP_DSHOW)
+                    if not std_cap.isOpened():
+                        continue
+                
+                std_ret, std_frame = std_cap.read()
+                if not std_ret:
+                    std_cap.release()
+                    continue
+                
+                # Get standard camera properties
+                std_width = int(std_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                std_height = int(std_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                std_cap.release()
+                std_cap = None
+                
+                # Try each enumerated camera to find a match
+                for enum_cam in enumerated_cams:
+                    if enum_cam.index in used_enumerated:
+                        continue
+                    
+                    try:
+                        # Try opening enumerated camera
+                        enum_cap = cv2.VideoCapture(enum_cam.index, cv2.CAP_DSHOW)
+                        if enum_cap.isOpened():
+                            enum_ret, enum_frame = enum_cap.read()
+                            if enum_ret:
+                                # Compare properties
+                                enum_width = int(enum_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                enum_height = int(enum_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                
+                                # Match if resolution is the same (simple heuristic)
+                                if abs(enum_width - std_width) < 5 and abs(enum_height - std_height) < 5:
+                                    matched_enum_cam = enum_cam
+                                    enum_cap.release()
+                                    break
+                            enum_cap.release()
+                    except Exception:
+                        try:
+                            enum_cap.release()
+                        except Exception:
+                            pass
+                
+            except Exception as e:
+                if std_cap:
+                    try:
+                        std_cap.release()
+                    except Exception:
+                        pass
+                logger.debug(f"Error processing standard camera {std_index}: {e}")
+                continue
+            
+            # Build camera info
+            if matched_enum_cam:
+                camera_info = {
+                    "index": std_index,
+                    "name": matched_enum_cam.name if hasattr(matched_enum_cam, 'name') and matched_enum_cam.name else f"Camera {std_index}",
+                    "vid": f"{matched_enum_cam.vid:04X}" if hasattr(matched_enum_cam, 'vid') and matched_enum_cam.vid and matched_enum_cam.vid != 0 else None,
+                    "pid": f"{matched_enum_cam.pid:04X}" if hasattr(matched_enum_cam, 'pid') and matched_enum_cam.pid and matched_enum_cam.pid != 0 else None,
+                    "backend": getattr(matched_enum_cam, 'backend_name', None) or "DirectShow",
+                    "resolution": (std_width, std_height) if std_width > 0 and std_height > 0 else None,
+                }
+                used_enumerated.add(matched_enum_cam.index)
+            else:
+                # No match found - use standard camera info
+                camera_info = {
+                    "index": std_index,
+                    "name": std_cam.get("name", f"Camera {std_index}"),
+                    "vid": None,
+                    "pid": None,
+                    "backend": std_cam.get("backend", "Default"),
+                    "resolution": std_cam.get("resolution"),
+                }
+            
+            merged.append(camera_info)
+        
+        # Add any unmatched enumerated cameras (cameras not accessible via standard indices)
+        for enum_cam in enumerated_cams:
+            if enum_cam.index not in used_enumerated:
+                try:
+                    cap = cv2.VideoCapture(enum_cam.index, cv2.CAP_DSHOW)
+                    if cap.isOpened():
+                        ret, _ = cap.read()
+                        if ret:
+                            camera_info = {
+                                "index": enum_cam.index,
+                                "name": enum_cam.name if hasattr(enum_cam, 'name') and enum_cam.name else f"Camera {enum_cam.index}",
+                                "vid": f"{enum_cam.vid:04X}" if hasattr(enum_cam, 'vid') and enum_cam.vid and enum_cam.vid != 0 else None,
+                                "pid": f"{enum_cam.pid:04X}" if hasattr(enum_cam, 'pid') and enum_cam.pid and enum_cam.pid != 0 else None,
+                                "backend": getattr(enum_cam, 'backend_name', None) or "DirectShow",
+                                "resolution": None,
+                            }
+                            try:
+                                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                if width > 0 and height > 0:
+                                    camera_info["resolution"] = (width, height)
+                            except Exception:
+                                pass
+                            merged.append(camera_info)
+                    cap.release()
+                except Exception:
+                    pass
+        
+        return merged
+    
     def _list_cameras_cv2_enumerate(self, max_check: int = 10) -> List[Dict[str, Any]]:
         """List cameras using cv2-enumerate-cameras package.
         
+        cv2-enumerate-cameras returns DirectShow filter indices (can be high numbers like 700, 1400).
+        These indices work with VideoCapture when using DirectShow backend.
+        We also check standard OpenCV indices (0-10) and try to match them.
+        
         Args:
-            max_check: Maximum device index to check.
+            max_check: Maximum standard OpenCV index to check.
             
         Returns:
-            List of camera info dictionaries.
+            List of camera info dictionaries. Uses standard OpenCV indices when possible,
+            otherwise uses cv2-enumerate-cameras indices.
         """
         from cv2_enumerate_cameras import enumerate_cameras  # type: ignore
         
+        enumerated_cams = list(enumerate_cameras())
+        if not enumerated_cams:
+            return []
+        
         cameras = []
-        enumerated = enumerate_cameras()
         
-        # Create a mapping of OpenCV index to enumerated camera info
-        index_to_camera = {}
-        for cam in enumerated:
-            if cam.index < max_check:
-                index_to_camera[cam.index] = cam
-        
-        # Verify each camera works and get additional info
-        for index, cam_info in index_to_camera.items():
-            try:
-                cap = cv2.VideoCapture(index, cam_info.backend if hasattr(cam_info, 'backend') else cv2.CAP_ANY)
-                if not cap.isOpened():
-                    continue
-                
-                # Verify camera works
-                ret, _ = cap.read()
-                if not ret:
-                    cap.release()
-                    continue
-                
-                camera_info = {
-                    "index": index,
-                    "name": cam_info.name if hasattr(cam_info, 'name') and cam_info.name else f"Camera {index}",
-                    "vid": f"{cam_info.vid:04X}" if hasattr(cam_info, 'vid') and cam_info.vid else None,
-                    "pid": f"{cam_info.pid:04X}" if hasattr(cam_info, 'pid') and cam_info.pid else None,
-                    "backend": getattr(cam_info, 'backend_name', None) or "Unknown",
-                    "resolution": None,
-                }
-                
-                # Get resolution
+        # Process each enumerated camera
+        for cam_info in enumerated_cams:
+            # Try to find matching standard OpenCV index first
+            matched_opencv_index = None
+            for i in range(max_check):
                 try:
-                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    if width > 0 and height > 0:
-                        camera_info["resolution"] = (width, height)
+                    # Try opening with standard index
+                    test_cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                    if test_cap.isOpened():
+                        ret, _ = test_cap.read()
+                        if ret:
+                            # Check if this might be the same camera by comparing name/VID/PID
+                            # We can't directly compare, but if enumerated index also opens, 
+                            # we'll prefer the standard index
+                            test_cap.release()
+                            # Try enumerated index to see if it's the same device
+                            enum_cap = cv2.VideoCapture(cam_info.index, cv2.CAP_DSHOW)
+                            if enum_cap.isOpened():
+                                enum_ret, _ = enum_cap.read()
+                                if enum_ret:
+                                    # Both work - prefer standard index
+                                    matched_opencv_index = i
+                                    enum_cap.release()
+                                    break
+                            enum_cap.release()
+                        else:
+                            test_cap.release()
+                    else:
+                        test_cap.release()
                 except Exception:
-                    pass
-                
-                cameras.append(camera_info)
-                cap.release()
-                
-            except Exception as e:
-                logger.debug(f"Failed to verify camera {index} from cv2-enumerate-cameras: {e}")
+                    continue
+            
+            # Use matched OpenCV index or enumerated index
+            if matched_opencv_index is not None:
+                camera_index = matched_opencv_index
+                cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            else:
+                # Use enumerated index directly
+                camera_index = cam_info.index
+                try:
+                    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+                except Exception:
+                    continue
+            
+            if not cap.isOpened():
                 continue
+            
+            # Verify camera works
+            ret, _ = cap.read()
+            if not ret:
+                cap.release()
+                continue
+            
+            # Build camera info
+            camera_info = {
+                "index": camera_index,
+                "name": cam_info.name if hasattr(cam_info, 'name') and cam_info.name else f"Camera {camera_index}",
+                "vid": f"{cam_info.vid:04X}" if hasattr(cam_info, 'vid') and cam_info.vid and cam_info.vid != 0 else None,
+                "pid": f"{cam_info.pid:04X}" if hasattr(cam_info, 'pid') and cam_info.pid and cam_info.pid != 0 else None,
+                "backend": getattr(cam_info, 'backend_name', None) or "DirectShow",
+                "resolution": None,
+            }
+            
+            # Get resolution
+            try:
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if width > 0 and height > 0:
+                    camera_info["resolution"] = (width, height)
+            except Exception:
+                pass
+            
+            cameras.append(camera_info)
+            cap.release()
         
         return cameras
     
@@ -376,6 +553,8 @@ class CameraManager:
     def _list_cameras_basic(self, max_check: int = 10) -> List[Dict[str, Any]]:
         """Basic camera enumeration using OpenCV only (fallback method).
         
+        More robust implementation with better error handling and resource cleanup.
+        
         Args:
             max_check: Maximum device index to check.
             
@@ -386,57 +565,105 @@ class CameraManager:
         import platform
         
         for i in range(max_check):
+            cap = None
+            cap_dshow = None
+            
             try:
+                # Try default backend first
                 cap = cv2.VideoCapture(i)
                 if not cap.isOpened():
-                    continue
+                    # Try DirectShow on Windows as fallback
+                    if platform.system() == "Windows":
+                        try:
+                            cap_dshow = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                            if cap_dshow.isOpened():
+                                cap = cap_dshow
+                                cap_dshow = None  # Don't release separately
+                            else:
+                                cap_dshow.release()
+                                cap_dshow = None
+                                continue
+                        except Exception as e:
+                            logger.debug(f"Failed to open camera {i} with DirectShow: {e}")
+                            continue
+                    else:
+                        continue
                 
-                ret, _ = cap.read()
-                if not ret:
+                # Verify camera works by reading a frame
+                ret, frame = cap.read()
+                if not ret or frame is None:
                     cap.release()
+                    cap = None
                     continue
                 
                 camera_info = {
                     "index": i,
-                    "name": None,
+                    "name": f"Camera {i}",
                     "vid": None,
                     "pid": None,
                     "backend": None,
                     "resolution": None,
                 }
                 
-                # Try to get backend info
+                # Determine backend
                 if platform.system() == "Windows":
-                    try:
-                        backend = cv2.CAP_DSHOW
-                        cap_dshow = cv2.VideoCapture(i, backend)
-                        if cap_dshow.isOpened():
-                            camera_info["backend"] = "DirectShow"
-                            cap_dshow.release()
-                        else:
+                    # Check if we used DirectShow
+                    if cap_dshow is None:
+                        # Try to detect backend by testing DirectShow
+                        try:
+                            test_cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                            if test_cap.isOpened():
+                                test_ret, _ = test_cap.read()
+                                if test_ret:
+                                    camera_info["backend"] = "DirectShow"
+                                test_cap.release()
+                            else:
+                                camera_info["backend"] = "Default"
+                        except Exception:
                             camera_info["backend"] = "Default"
-                    except Exception:
-                        camera_info["backend"] = "Default"
+                    else:
+                        camera_info["backend"] = "DirectShow"
                 elif platform.system() == "Linux":
                     camera_info["backend"] = "V4L2"
+                else:
+                    camera_info["backend"] = "Default"
                 
-                # Get resolution
+                # Get resolution with validation
                 try:
                     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    if width > 0 and height > 0:
+                    # Validate resolution values
+                    if width > 0 and height > 0 and width < 10000 and height < 10000:
                         camera_info["resolution"] = (width, height)
-                except Exception:
-                    pass
+                    else:
+                        logger.debug(f"Camera {i}: Invalid resolution {width}x{height}")
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Camera {i}: Failed to get resolution: {e}")
+                except Exception as e:
+                    logger.debug(f"Camera {i}: Unexpected error getting resolution: {e}")
                 
-                camera_info["name"] = f"Camera {i}"
                 cameras.append(camera_info)
-                cap.release()
                 
-            except Exception:
-                continue
+            except cv2.error as e:
+                logger.debug(f"OpenCV error accessing camera {i}: {e}")
+            except Exception as e:
+                logger.debug(f"Unexpected error accessing camera {i}: {e}")
+            finally:
+                # Ensure resources are always released
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception as e:
+                        logger.debug(f"Error releasing camera {i}: {e}")
+                if cap_dshow is not None:
+                    try:
+                        cap_dshow.release()
+                    except Exception as e:
+                        logger.debug(f"Error releasing DirectShow camera {i}: {e}")
         
         return cameras
+
+
     
     def is_camera_connected(self, device_index: int) -> bool:
         """Check if a camera device is connected and available.

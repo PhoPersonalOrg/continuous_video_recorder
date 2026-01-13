@@ -1,6 +1,6 @@
 [project]
 name = "continuous-video-recorder"
-version = "0.2.0"
+version = "0.2.1"
 description = "Continuous video recorder with presence detection for performance monitoring"
 readme = "README.md"
 requires-python = ">=3.9.13"
@@ -17,4 +17,10 @@ dependencies = [
 [project.optional-dependencies]
 windows = [
     "WMI>=1.5.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.31.0",
+    "ipywidgets>=8.1.8",
 ]
