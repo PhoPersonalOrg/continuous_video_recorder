@@ -12,6 +12,7 @@ from src.recorder import VideoRecorder
 from src.lsl_trigger import LSLTrigger
 from src.camera_manager import CameraManager
 from src.preview_window import CameraPreviewManager
+from src.web_stream_server import WebStreamServer
 from src.utils import setup_logging, setup_signal_handlers, format_duration
 
 
@@ -69,6 +70,9 @@ class ContinuousVideoRecorder:
         preview_config = self.config.get("preview", {})
         if preview_config.get("enabled", False):
             self.preview_manager = CameraPreviewManager(self.config)
+        
+        # Web stream server (optional, enabled via config)
+        self.web_server: Optional[WebStreamServer] = None
         
         # Shutdown flag
         self.shutdown_requested = False
@@ -143,6 +147,27 @@ class ContinuousVideoRecorder:
             self.preview_manager.start_preview(camera_ids)
             self.logger.info(f"Preview windows started for {len(camera_ids)} camera(s)")
         
+        # Start web stream server if enabled
+        web_ui_config = self.config.get("web_ui", {})
+        if web_ui_config.get("enabled", False):
+            try:
+                camera_ids = list(self.camera_manager.cameras.keys())
+                self.web_server = WebStreamServer(camera_ids, self.config)
+                
+                # Get port and host from config
+                port = web_ui_config.get("port", 5000)
+                host = web_ui_config.get("host", "0.0.0.0")
+                
+                # Start the server
+                if self.web_server.start_server(port, host):
+                    self.logger.info(f"Web UI started successfully for {len(camera_ids)} camera(s)")
+                else:
+                    self.logger.error("Failed to start web UI server")
+                    self.web_server = None
+            except Exception as e:
+                self.logger.error(f"Failed to initialize web UI: {e}", exc_info=True)
+                self.web_server = None
+        
         return True
     
 
@@ -162,6 +187,14 @@ class ContinuousVideoRecorder:
         # Cleanup preview windows
         if self.preview_manager:
             self.preview_manager.stop_preview()
+        
+        # Cleanup web server
+        if self.web_server:
+            try:
+                self.web_server.stop_server()
+                self.logger.info("Web server stopped successfully")
+            except Exception as e:
+                self.logger.error(f"Error stopping web server: {e}", exc_info=True)
         
         # Cleanup LSL
         self.lsl_trigger.close()
@@ -282,6 +315,13 @@ class ContinuousVideoRecorder:
                     # Update preview window if enabled
                     if self.preview_manager and frame is not None:
                         self.preview_manager.update_frame(camera_id, frame)
+                    
+                    # Update web stream if enabled
+                    if self.web_server and frame is not None:
+                        try:
+                            self.web_server.update_frame(camera_id, frame)
+                        except Exception as e:
+                            self.logger.debug(f"Web server frame update error for camera {camera_id}: {e}")
                     
                     # Branch logic based on recording mode
                     if recording_mode == "usb_continuous":

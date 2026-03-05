@@ -29,7 +29,8 @@
 		// "panel.background": "#f6f8fa",
 		// "panel.border": "#a0a4ab"
 	},
-	"workbench.preferredLightColorTheme": "Default Light+"
+	"workbench.preferredLightColorTheme": "Default Light+",
+	"python.languageServer": "None"
 
 
 	}

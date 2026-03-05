@@ -74,3 +74,12 @@ preview:
   show_timestamp: true    # Show timestamp overlay on frames
   preview_resolution: [640, 480]  # Optional: downscale preview (leave empty for full resolution)
   
+
+
+# Web UI Configuration
+web_ui:
+  enabled: true  # Enable/disable web-based stream viewer
+  port: 5000  # HTTP server port (1024-65535)
+  host: "0.0.0.0"  # Bind address (0.0.0.0 = all interfaces, 127.0.0.1 = localhost only)
+  jpeg_quality: 85  # JPEG encoding quality (1-100, higher = better quality but larger size)
+  max_buffer_size: 2  # Maximum frames to buffer per camera
