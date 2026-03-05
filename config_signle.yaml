@@ -1,0 +1,42 @@
+video:
+  resolution: [640, 480]
+  fps: 30
+  codec: "mp4v"
+  quality: "medium"
+  
+detection:
+  face_confidence: 0.5
+  motion_threshold: 30
+  face_check_interval: 5  # Check face every N frames
+  
+buffer:
+  absence_timeout: 35  # seconds
+  
+storage:
+  output_dir: "M:/ScreenRecordings/REC_continuous_video_recorder" #  "./recordings"  # Change this to your desired output directory
+  min_duration: 5  # minimum seconds to save a video
+  auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
+  filename_format: "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%"  # Filename format with datetime placeholders: %YYYY%, %MM%, %DD%, %HH%, %MIN%, %SS%
+
+webcam:
+  # Support both single camera (device_index) and multiple cameras (devices)
+  # For single camera, use: device_index: 0
+  # For multiple cameras, use: devices: [0, 1]
+  device_index: 0  # Legacy single camera support
+  # devices: [0]  # Uncomment and specify list of device indices for multiple cameras
+  # Optional per-camera settings (uses video defaults if not specified)
+  # camera_0:
+  #   resolution: [1280, 720]
+  #   fps: 24
+  # camera_1:
+  #   resolution: [1920, 1080]
+  #   fps: 30
+
+lsl:
+  enabled: true
+  stream_name: "VideoRecorderMarkers"
+  stream_type: "Markers"
+  source_id: "continuous_video_recorder"
+  marker_start: "RECORDING_START"
+  marker_stop: "RECORDING_STOP"
+  include_metadata: true  # Include filename, session ID in marker metadata

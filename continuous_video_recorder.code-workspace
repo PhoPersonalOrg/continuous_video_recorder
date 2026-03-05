@@ -1,0 +1,37 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+	"workbench.colorCustomizations": {
+		// "activityBar.background": "#ffffff",
+		// "activityBar.foreground": "#111111",
+		// "activityBar.inactiveForeground": "#303030",
+		// "sideBar.background": "#fafafa",
+		// "sideBar.foreground": "#181818",
+		// "editor.background": "#ffffff",
+		// "editor.foreground": "#181818",
+		// "editorLineNumber.foreground": "#888888",
+		// "editorCursor.foreground": "#181818",
+		// "editor.selectionBackground": "#c3d5ff",
+		// "editor.inactiveSelectionBackground": "#d9e6fe",
+		// "editorLineNumber.activeForeground": "#003399",
+		// "editorBracketMatch.background": "#e6f0ff",
+		// "editorBracketMatch.border": "#222222",
+		// "statusBar.background": "#f9f9f9",
+		// "statusBar.foreground": "#181818",
+		// "titleBar.activeBackground": "#ffffff",
+		// "titleBar.inactiveBackground": "#f0f0f0",
+		// "titleBar.activeForeground": "#111111",
+		// "titleBar.inactiveForeground": "#444444",
+		// "panel.background": "#f6f8fa",
+		// "panel.border": "#a0a4ab"
+	},
+	"workbench.preferredLightColorTheme": "Default Light+",
+	"python.languageServer": "None"
+
+
+	}
+}

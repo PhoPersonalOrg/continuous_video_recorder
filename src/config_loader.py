@@ -29,9 +29,11 @@ class ConfigLoader:
             "output_dir": "M:\\ScreenRecordings\\EyeTrackerVR_Recordings",
             "min_duration": 5,
             "auto_split_duration": 3600,  # 1 hour in seconds
+            "filename_format": "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%",
         },
         "webcam": {
-            "device_index": 0,
+            "device_index": 0,  # Legacy single camera support
+            "devices": [0],  # List of camera device indices
         },
         "lsl": {
             "enabled": True,
@@ -41,6 +43,12 @@ class ConfigLoader:
             "marker_start": "RECORDING_START",
             "marker_stop": "RECORDING_STOP",
             "include_metadata": True,
+        },
+        "preview": {
+            "enabled": False,
+            "update_interval_ms": 30,
+            "show_timestamp": True,
+            "preview_resolution": [640, 480],  # Optional downscaling for preview
         },
     }
     
@@ -106,10 +114,39 @@ class ConfigLoader:
         assert config["storage"]["auto_split_duration"] > 0
         
         # Validate webcam settings
-        assert isinstance(config["webcam"]["device_index"], int) and config["webcam"]["device_index"] >= 0
+        webcam_config = config["webcam"]
+        # Support both legacy device_index and new devices list
+        if "device_index" in webcam_config:
+            assert isinstance(webcam_config["device_index"], int) and webcam_config["device_index"] >= 0
+        if "devices" in webcam_config:
+            assert isinstance(webcam_config["devices"], list) and len(webcam_config["devices"]) > 0
+            for device_idx in webcam_config["devices"]:
+                assert isinstance(device_idx, int) and device_idx >= 0
+        # Ensure at least one camera is configured
+        if "devices" not in webcam_config and "device_index" in webcam_config:
+            # Convert legacy device_index to devices list
+            config["webcam"]["devices"] = [webcam_config["device_index"]]
+        elif "devices" not in webcam_config:
+            # Default to single camera at index 0
+            config["webcam"]["devices"] = [0]
+        
+        # Validate per-camera recording modes
+        valid_modes = ["motion_detect", "usb_continuous"]
+        for key, value in webcam_config.items():
+            if key.startswith("camera_") and isinstance(value, dict):
+                if "mode" in value:
+                    assert value["mode"] in valid_modes, f"Invalid recording mode '{value['mode']}' for {key}. Must be one of: {valid_modes}"
         
         # Validate LSL settings
         assert isinstance(config["lsl"]["enabled"], bool)
+        
+        # Validate preview settings
+        assert isinstance(config["preview"]["enabled"], bool)
+        assert config["preview"]["update_interval_ms"] > 0
+        assert isinstance(config["preview"]["show_timestamp"], bool)
+        if config["preview"]["preview_resolution"]:
+            assert isinstance(config["preview"]["preview_resolution"], list) and len(config["preview"]["preview_resolution"]) == 2
+            assert all(isinstance(x, int) and x > 0 for x in config["preview"]["preview_resolution"])
         
         logger.info("Configuration validated successfully")
 

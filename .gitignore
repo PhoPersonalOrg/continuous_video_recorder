@@ -1,6 +1,5 @@
-src/__pycache__/__init__.cpython-39.pyc
-src/__pycache__/config_loader.cpython-39.pyc
-src/__pycache__/detector.cpython-39.pyc
-src/__pycache__/lsl_trigger.cpython-39.pyc
-src/__pycache__/recorder.cpython-39.pyc
-src/__pycache__/utils.cpython-39.pyc
+**/__pycache__
+desktop.ini
+.specstory
+INTEGRATION_SUMMARY.md
+WEB_UI_IMPLEMENTATION_COMPLETE.md
