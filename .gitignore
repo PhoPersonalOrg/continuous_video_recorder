@@ -4,3 +4,6 @@ desktop.ini
 INTEGRATION_SUMMARY.md
 WEB_UI_IMPLEMENTATION_COMPLETE.md
 EXTERNAL/REC_continuous_video_recorder
+EXTERNAL/EXAMPLE_REPOS/DoubleCameraRecording
+EXTERNAL/EXAMPLE_REPOS/pyqt5_camera_new
+EXTERNAL/EXAMPLE_REPOS/mqtt-camera-streamer
