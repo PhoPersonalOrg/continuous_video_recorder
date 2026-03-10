@@ -12,4 +12,4 @@ continuous_video_recorder.egg-info/PKG-INFO
 continuous_video_recorder.egg-info/requires.txt
 continuous_video_recorder.egg-info/SOURCES.txt
 continuous_video_recorder.egg-info/top_level.txt
-recordings/Record_2026-03-10T073436.mp4
+recordings/*.mp4

@@ -29,57 +29,16 @@ Press Ctrl+C to stop recording gracefully.
 import signal
 import sys
 import os
-from datetime import datetime
+from pathlib import Path
 
 # Import Camera_Manager and Video_Recorder from the src package
 from src.camera_manager import CameraManager
 from src.recorder import VideoRecorder
+from src.config_loader import ConfigLoader
 
-# Camera Configuration
-# Configure the HD Pro Webcam C920 with Debut-style settings
-camera_config = {
-    "cameras": [
-        {
-            "name": "HD Pro Webcam C920",
-            "resolution": (640, 480),  # 640x480 resolution for standard quality
-            "fps": 30,  # 30 frames per second
-            "fourcc": "YUY2",  # YUY2 color format (uncompressed YUV)
-            "settings": {
-                # Optical settings
-                "zoom": 100,  # Digital zoom level (100 = no zoom)
-                "focus": 0,  # Focus setting (0 = auto-focus enabled)
-                "exposure": -5,  # Exposure setting (-5 = auto-exposure enabled)
-                "pan": 0,  # Pan position (0 = center)
-                "tilt": 0,  # Tilt position (0 = center)
-                
-                # Image enhancement settings
-                "low_light_compensation": 1,  # Enable low light compensation for better dark scene performance
-                "brightness": 128,  # Brightness level (0-255, 128 = neutral)
-                "contrast": 128,  # Contrast level (0-255, 128 = neutral)
-                "saturation": 128,  # Color saturation (0-255, 128 = neutral)
-                "sharpness": 128,  # Image sharpness (0-255, 128 = neutral)
-                
-                # Advanced settings
-                "white_balance": 4336,  # White balance (4336 = auto white balance enabled)
-                "backlight_compensation": 0,  # Backlight compensation (0 = disabled)
-                "gain": 78,  # Gain/ISO sensitivity (78 = moderate sensitivity)
-                "powerline_frequency": 60,  # Anti-flicker setting (60Hz for North America)
-            }
-        }
-    ]
-}
-# Recorder Configuration
-# Configure video recording with MP4 output, audio, and auto-split
-recorder_config = {
-    "output_dir": "M:\\ScreenRecordings\\EyeTrackerVR_Recordings",  # Output directory for recordings
-    "filename_pattern": "Debut_{timestamp}.mp4",  # Filename pattern with timestamp placeholder
-    "codec": "mp4v",  # MP4 video codec (mp4v for MPEG-4 Part 2)
-    "audio_enabled": True,  # Enable audio recording
-    "audio_device": "Microphone HD Pro Webcam C920",  # Audio input device (camera's built-in microphone)
-    "max_duration_seconds": 3600,  # Maximum recording duration before auto-split (3600 seconds = 1 hour)
-    "fps": 30,  # Frame rate (must match camera fps)
-    "resolution": (640, 480)  # Video resolution (must match camera resolution)
-}
+# Load Debut-style config from YAML (same settings as previous inline camera_config/recorder_config)
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config_webcam_debut.yaml"
+config = ConfigLoader.load_config(_CONFIG_PATH)
 
 # Global variables for signal handler
 camera_manager = None
@@ -149,7 +108,7 @@ def main():
     
     # Create output directory if it doesn't exist
     # This ensures recordings can be saved even on first run
-    output_dir = recorder_config["output_dir"]
+    output_dir = config["storage"]["output_dir"]
     try:
         os.makedirs(output_dir, exist_ok=True)
         print(f"Output directory ready: {output_dir}")
@@ -161,7 +120,7 @@ def main():
     # This opens the camera device and applies hardware settings
     print("\nInitializing camera...")
     try:
-        camera_manager = CameraManager(camera_config)
+        camera_manager = CameraManager(config)
         if not camera_manager.initialize_cameras():
             print("ERROR: Failed to initialize camera. Please check:")
             print("  - Camera is connected via USB")
@@ -178,7 +137,7 @@ def main():
     # This creates the video file and begins capturing frames
     print("\nStarting recording...")
     try:
-        video_recorder = VideoRecorder(recorder_config)
+        video_recorder = VideoRecorder(config)
         output_file = video_recorder.start_recording()
         
         if output_file is None:

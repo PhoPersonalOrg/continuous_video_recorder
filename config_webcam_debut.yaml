@@ -1,0 +1,82 @@
+video:
+  resolution: [640, 480]
+  fps: 30
+  codec: "mp4v"
+  quality: "medium"
+  
+detection:
+  face_confidence: 0.5
+  motion_threshold: 30
+  face_check_interval: 5  # Check face every N frames
+  
+buffer:
+  absence_timeout: 35  # seconds
+  
+storage:
+  output_dir: "M:/ScreenRecordings/EyeTrackerVR_Recordings"
+  min_duration: 5  # minimum seconds to save a video
+  auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
+  filename_format: "Debut_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%.mp4"  # Debut-style filename with datetime placeholders
+  audio_enabled: true
+  audio_device: "Microphone HD Pro Webcam C920"
+
+
+
+webcam:
+  # Single camera (Debut-style: HD Pro Webcam C920)
+  devices: [0]
+  camera_0:
+    name: "HD Pro Webcam C920"
+    mode: "motion_detect"
+    resolution: [640, 480]
+    fps: 30
+    fourcc: "YUY2"
+    settings:
+      # Optical
+      zoom: 100
+      focus: 0
+      exposure: -5
+      pan: 0
+      tilt: 0
+      # Image enhancement
+      low_light_compensation: 1
+      brightness: 128
+      contrast: 128
+      saturation: 128
+      sharpness: 128
+      # Advanced
+      white_balance: 4336
+      backlight_compensation: 0
+      gain: 78
+      powerline_frequency: 60
+  # camera_1:  # Commented out for single-camera Debut setup
+  #   name: "USB Camera"
+  #   mode: "usb_continuous"
+  #   resolution: [1920, 1080]
+  #   fps: 30
+
+lsl:
+  enabled: true
+  stream_name: "VideoRecorderMarkers"
+  stream_type: "Markers"
+  source_id: "continuous_video_recorder"
+  marker_start: "RECORDING_START"
+  marker_stop: "RECORDING_STOP"
+  include_metadata: true  # Include filename, session ID in marker metadata
+
+
+preview:
+  enabled: true
+  update_interval_ms: 30  # Frame update interval (~33 FPS)
+  show_timestamp: true    # Show timestamp overlay on frames
+  preview_resolution: [640, 480]  # Optional: downscale preview (leave empty for full resolution)
+  
+
+
+# Web UI Configuration
+web_ui:
+  enabled: true  # Enable/disable web-based stream viewer
+  port: 5000  # HTTP server port (1024-65535)
+  host: "0.0.0.0"  # Bind address (0.0.0.0 = all interfaces, 127.0.0.1 = localhost only)
+  jpeg_quality: 85  # JPEG encoding quality (1-100, higher = better quality but larger size)
+  max_buffer_size: 2  # Maximum frames to buffer per camera
