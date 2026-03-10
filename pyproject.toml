@@ -1,6 +1,6 @@
 [project]
 name = "continuous-video-recorder"
-version = "0.2.1"
+version = "0.3.0"
 description = "Continuous video recorder with presence detection for performance monitoring"
 readme = "README.md"
 requires-python = ">=3.9.13"
@@ -9,7 +9,7 @@ dependencies = [
     "numpy>=1.24.0",
     "pyyaml>=6.0",
     "pylsl>=1.16.0",
-    "vidgear>=0.3.3",
+    "vidgear[all,camgear]>=0.3.3",
     "setuptools>=65.0.0",
     "cv2-enumerate-cameras>=0.1.0",
     "pandas>=2.3.3",
@@ -18,6 +18,7 @@ dependencies = [
     "pyqt6>=6.10.2",
     "flask>=3.1.3",
     "pytest>=8.4.2",
+    "wmi>=1.5.1",
 ]
 
 [project.optional-dependencies]
@@ -30,3 +31,11 @@ dev = [
     "ipykernel>=6.31.0",
     "ipywidgets>=8.1.8",
 ]
+
+[build-system]
+requires = ["setuptools>=65.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src"]

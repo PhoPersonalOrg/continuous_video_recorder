@@ -7,3 +7,9 @@ EXTERNAL/REC_continuous_video_recorder
 EXTERNAL/EXAMPLE_REPOS/DoubleCameraRecording
 EXTERNAL/EXAMPLE_REPOS/pyqt5_camera_new
 EXTERNAL/EXAMPLE_REPOS/mqtt-camera-streamer
+continuous_video_recorder.egg-info/dependency_links.txt
+continuous_video_recorder.egg-info/PKG-INFO
+continuous_video_recorder.egg-info/requires.txt
+continuous_video_recorder.egg-info/SOURCES.txt
+continuous_video_recorder.egg-info/top_level.txt
+recordings/Record_2026-03-10T073436.mp4

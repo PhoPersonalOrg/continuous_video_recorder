@@ -1,4 +1,11 @@
 {
-	"git.enabled": true,
-	"python.languageServer": "None"
+  "git.enabled": true,
+  "python.languageServer": "None",
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.kiro": true,
+    "**/.pytest_cache": true,
+    "**/.specstory": true
+  },
+  "python.analysis.typeCheckingMode": "off"
 }
