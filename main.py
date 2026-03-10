@@ -13,7 +13,7 @@ from src.config_loader import ConfigLoader
 from src.detector import PresenceDetector
 from src.recorder import VideoRecorder
 from src.lsl_trigger import LSLTrigger
-from src.utils import setup_logging, setup_signal_handlers, format_duration
+from src.utils import setup_logging, setup_signal_handlers
 
 
 class RecordingState(Enum):
