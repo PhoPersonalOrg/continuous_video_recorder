@@ -31,6 +31,7 @@ class VideoRecorder:
         self.min_duration = self.storage_config.get("min_duration", 5)
         self.auto_split_duration = self.storage_config.get("auto_split_duration", 3600)  # Default 1 hour
         self.filename_format = self.storage_config.get("filename_format", None)
+        self.output_extension = self.storage_config.get("output_extension", "mkv")
         
         self.writer: Optional[WriteGear] = None
         self.current_file: Optional[Path] = None
@@ -49,6 +50,8 @@ class VideoRecorder:
         codec_to_ffmpeg = {"H264": "libx264", "avc1": "libx264", "h264": "libx264"}
         vcodec = codec_to_ffmpeg.get(self.codec, "libx264")
         params = {"-vcodec": vcodec, "-crf": crf, "-preset": preset, "-output_dimensions": self.resolution, "-input_framerate": self.fps}
+        if self.output_extension == "mkv":
+            params["-f"] = "matroska"
         return params
 
 
@@ -98,7 +101,7 @@ class VideoRecorder:
         try:
             # Generate filename
             from src.utils import generate_timestamped_filename
-            self.current_file = generate_timestamped_filename(prefix="Record", extension="mp4", output_dir=self.output_dir, filename_format=self.filename_format)
+            self.current_file = generate_timestamped_filename(prefix="Record", extension=self.output_extension, output_dir=self.output_dir, filename_format=self.filename_format)
             
             self.writer = self._create_writer(self.current_file)
             if self.writer is None:
@@ -251,7 +254,7 @@ class VideoRecorder:
             
             # Start new recording immediately
             from src.utils import generate_timestamped_filename
-            self.current_file = generate_timestamped_filename(prefix="Record", extension="mp4", output_dir=self.output_dir, filename_format=self.filename_format)
+            self.current_file = generate_timestamped_filename(prefix="Record", extension=self.output_extension, output_dir=self.output_dir, filename_format=self.filename_format)
             self.writer = self._create_writer(self.current_file)
             if self.writer is None:
                 self.current_file = None

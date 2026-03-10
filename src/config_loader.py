@@ -31,6 +31,7 @@ class ConfigLoader:
             "min_duration": 5,
             "auto_split_duration": 3600,  # 1 hour in seconds
             "filename_format": "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%",
+            "output_extension": "mkv",  # mkv is crash-safe; use "mp4" for traditional finalize-at-end
         },
         "webcam": {
             "device_index": 0,  # Legacy single camera support
@@ -113,6 +114,7 @@ class ConfigLoader:
         # Validate storage settings
         assert config["storage"]["min_duration"] >= 0
         assert config["storage"]["auto_split_duration"] > 0
+        assert config["storage"].get("output_extension", "mkv") in ["mkv", "mp4"]
         
         # Validate webcam settings
         webcam_config = config["webcam"]
