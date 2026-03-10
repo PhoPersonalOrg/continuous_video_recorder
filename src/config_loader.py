@@ -16,6 +16,7 @@ class ConfigLoader:
             "fps": 24,
             "codec": "mp4v",
             "quality": "medium",
+            "compression_mode": False,
         },
         "detection": {
             "face_confidence": 0.5,

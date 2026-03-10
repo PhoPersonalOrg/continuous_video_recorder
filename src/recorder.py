@@ -26,6 +26,7 @@ class VideoRecorder:
         self.resolution = tuple(self.video_config.get("resolution", [1280, 720]))
         self.fps = self.video_config.get("fps", 24)
         self.codec = self.video_config.get("codec", "avc1")
+        self.compression_mode = self.video_config.get("compression_mode", False)
         self.output_dir = Path(self.storage_config.get("output_dir", "./recordings"))
         self.min_duration = self.storage_config.get("min_duration", 5)
         self.auto_split_duration = self.storage_config.get("auto_split_duration", 3600)  # Default 1 hour
@@ -38,7 +39,52 @@ class VideoRecorder:
         
         # Ensure output directory exists
         self.output_dir.mkdir(parents=True, exist_ok=True)
-    
+
+
+    def _build_ffmpeg_output_params(self) -> Dict[str, Any]:
+        """Build FFMPEG output_params for WriteGear compression mode from video config."""
+        quality = self.video_config.get("quality", "medium")
+        quality_map = {"low": (28, "fast"), "medium": (23, "medium"), "high": (18, "slow")}
+        crf, preset = quality_map.get(quality, (23, "medium"))
+        codec_to_ffmpeg = {"H264": "libx264", "avc1": "libx264", "h264": "libx264"}
+        vcodec = codec_to_ffmpeg.get(self.codec, "libx264")
+        params = {"-vcodec": vcodec, "-crf": crf, "-preset": preset, "-output_dimensions": self.resolution, "-input_framerate": self.fps}
+        return params
+
+
+    def _create_writer(self, file_path: Path) -> Optional[WriteGear]:
+        """Create and return a WriteGear instance for the given path, or None on failure."""
+        if self.compression_mode:
+            output_params = self._build_ffmpeg_output_params()
+            try:
+                return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params)
+            except Exception as e:
+                logger.warning(f"Failed to open FFMPEG writer: {e}, trying without preset")
+                output_params = self._build_ffmpeg_output_params()
+                output_params.pop("-preset", None)
+                try:
+                    return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params)
+                except Exception as e2:
+                    logger.error(f"Failed to initialize FFMPEG video writer: {e2}")
+                    return None
+        output_params = {"-fourcc": self.codec}
+        try:
+            return WriteGear(output=str(file_path), compression_mode=False, logging=True, **output_params)
+        except Exception as e:
+            logger.warning(f"Failed to open writer with codec {self.codec}, trying H264: {e}")
+            output_params = {"-fourcc": "H264"}
+            try:
+                return WriteGear(output=str(file_path), compression_mode=False, logging=True, **output_params)
+            except Exception as e2:
+                logger.warning(f"Failed to open writer with codec H264, trying XVID: {e2}")
+                output_params = {"-fourcc": "XVID"}
+                try:
+                    return WriteGear(output=str(file_path), compression_mode=False, logging=True, **output_params)
+                except Exception as e3:
+                    logger.error(f"Failed to initialize video writer with fallback codecs: {e3}")
+                    return None
+
+
     def start_recording(self) -> Optional[Path]:
         """Start a new recording session.
         
@@ -54,26 +100,10 @@ class VideoRecorder:
             from src.utils import generate_timestamped_filename
             self.current_file = generate_timestamped_filename(prefix="Record", extension="mp4", output_dir=self.output_dir, filename_format=self.filename_format)
             
-            # Initialize WriteGear in non-compression mode
-            output_params = {"-fourcc": self.codec}
-            try:
-                self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
-            except Exception as e:
-                # Try fallback codecs
-                logger.warning(f"Failed to open writer with codec {self.codec}, trying H264: {e}")
-                output_params = {"-fourcc": "H264"}
-                try:
-                    self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
-                except Exception as e2:
-                    logger.warning(f"Failed to open writer with codec H264, trying XVID: {e2}")
-                    output_params = {"-fourcc": "XVID"}
-                    try:
-                        self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
-                    except Exception as e3:
-                        logger.error(f"Failed to initialize video writer with fallback codecs: {e3}")
-                        self.writer = None
-                        return None
-            
+            self.writer = self._create_writer(self.current_file)
+            if self.writer is None:
+                self.current_file = None
+                return None
             self.start_time = time.time()
             self.frame_count = 0
             logger.info(f"Started recording: {self.current_file.name}")
@@ -222,27 +252,10 @@ class VideoRecorder:
             # Start new recording immediately
             from src.utils import generate_timestamped_filename
             self.current_file = generate_timestamped_filename(prefix="Record", extension="mp4", output_dir=self.output_dir, filename_format=self.filename_format)
-            
-            # Initialize new WriteGear writer
-            output_params = {"-fourcc": self.codec}
-            try:
-                self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
-            except Exception as e:
-                # Try fallback codecs
-                logger.warning(f"Failed to open writer with codec {self.codec} during split, trying H264: {e}")
-                output_params = {"-fourcc": "H264"}
-                try:
-                    self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
-                except Exception as e2:
-                    logger.warning(f"Failed to open writer with codec H264 during split, trying XVID: {e2}")
-                    output_params = {"-fourcc": "XVID"}
-                    try:
-                        self.writer = WriteGear(output=str(self.current_file), compression_mode=False, logging=True, **output_params)
-                    except Exception as e3:
-                        logger.error(f"Failed to initialize video writer with fallback codecs during split: {e3}")
-                        self.writer = None
-                        return None
-            
+            self.writer = self._create_writer(self.current_file)
+            if self.writer is None:
+                self.current_file = None
+                return None
             # Reset timing for new file
             self.start_time = time.time()
             self.frame_count = 0

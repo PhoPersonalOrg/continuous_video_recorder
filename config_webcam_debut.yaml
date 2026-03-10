@@ -3,6 +3,7 @@ video:
   fps: 30
   codec: "H264"  # or "H264" if avc1 fails on your system
   quality: "medium"
+  compression_mode: true   # Use FFMPEG (WriteGear compression mode) instead of OpenCV
   
 detection:
   face_confidence: 0.5
