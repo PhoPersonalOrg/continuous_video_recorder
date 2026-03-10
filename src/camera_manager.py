@@ -130,18 +130,15 @@ class CameraManager:
             True if at least one camera initialized successfully, False otherwise.
         """
         success_count = 0
-        
         for camera_id, device_index in enumerate(self.device_indices):
             try:
                 camera_config = self.get_camera_config(camera_id, device_index)
-                
                 # Configure CamGear options
                 options = {
                     "CAP_PROP_FRAME_WIDTH": camera_config["resolution"][0],
                     "CAP_PROP_FRAME_HEIGHT": camera_config["resolution"][1],
                     "CAP_PROP_FPS": camera_config["fps"],
                 }
-                
                 # Initialize CamGear stream
                 stream = CamGear(source=device_index, logging=True, **options).start()
                 

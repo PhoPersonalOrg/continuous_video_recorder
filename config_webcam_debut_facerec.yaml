@@ -1,7 +1,7 @@
 video:
   resolution: [640, 480]
   fps: 30
-  codec: "H264"  # or "H264" if avc1 fails on your system
+  codec: "mp4v"
   quality: "medium"
   
 detection:
@@ -13,10 +13,10 @@ buffer:
   absence_timeout: 35  # seconds
   
 storage:
-  output_dir: "M:/ScreenRecordings/REC_continuous_video_recorder"
+  output_dir: "M:/ScreenRecordings/EyeTrackerVR_Recordings"
   min_duration: 5  # minimum seconds to save a video
   auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
-  filename_format: "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%"  # Debut-style filename with datetime placeholders
+  filename_format: "Debut_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%.mp4"  # Debut-style filename with datetime placeholders
   audio_enabled: true
   audio_device: "Microphone HD Pro Webcam C920"
 
