@@ -6,11 +6,14 @@ from the continuous video recorder application. It uses Flask to serve MJPEG
 streams over HTTP, enabling browser-based viewing without plugins.
 """
 
-import threading
-import queue
-import time
+import argparse
 import logging
+import queue
+import sys
+import threading
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Generator
 import cv2
 import numpy as np
@@ -576,3 +579,40 @@ class WebStreamServer:
             return False
         
         return self.server_thread.is_alive()
+
+
+def main() -> None:
+    """CLI entry: load config, start web stream server, block until interrupt."""
+    repo_root = Path(__file__).resolve().parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from src.config_loader import ConfigLoader
+
+    parser = argparse.ArgumentParser(description="Standalone MJPEG web viewer for configured cameras.")
+    _ = parser.add_argument("--config", type=Path, default=None, help="Path to YAML config (default: config.yaml in cwd)")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    try:
+        config = ConfigLoader.load_config(args.config)
+    except Exception as e:
+        logger.error("Failed to load configuration: %s", e)
+        sys.exit(1)
+    if "web_ui" not in config:
+        logger.error("Configuration must include a web_ui section (see config_webcam_debut.yaml).")
+        sys.exit(1)
+    camera_ids = list(config["webcam"]["devices"])
+    server = WebStreamServer(camera_ids=camera_ids, config=config)
+    if not server.start_server():
+        logger.error("Failed to start web stream server")
+        sys.exit(1)
+    try:
+        while server.is_running():
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested")
+    finally:
+        _ = server.stop_server()
+
+
+if __name__ == "__main__":
+    main()

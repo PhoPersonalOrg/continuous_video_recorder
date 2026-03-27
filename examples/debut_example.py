@@ -13,8 +13,9 @@ Features:
 
 Web Viewer Integration (Optional):
 To view the camera stream in a browser while recording:
-1. Start the web stream server in a separate terminal:
-   python src/web_stream_server.py
+1. Start the web stream server in a separate terminal (from repo root, same config as recording):
+   uv run src/web_stream_server.py --config config_webcam_debut.yaml
+   Omit --config to use config.yaml in the current directory.
 2. Open your browser and navigate to:
    http://localhost:5000
 3. The web viewer runs independently of this recording script
@@ -24,6 +25,12 @@ Usage:
     python examples/debut_example.py
 
 Press Ctrl+C to stop recording gracefully.
+
+
+Recording End:
+Computer Clock: 2026-03-27 1:47pm
+Filename: 'M:/ScreenRecordings/REC_continuous_video_recorder/CAM_2026-03-27T133153.mkv'
+
 """
 
 import signal
