@@ -547,8 +547,9 @@ class CameraManager:
         """Check if camera's USB device is still connected.
         
         Uses hybrid detection:
-        1. Primary: Frame read failures (tracked in read_frame)
-        2. Secondary: Direct device availability check
+        1. Frame read failures (tracked in read_frame) mark the device disconnected.
+        2. While connected, does not open a second VideoCapture (can break MSMF/CamGear on Windows).
+        3. When disconnected, probes the device for reconnect.
         
         Args:
             camera_id: Camera identifier.
@@ -562,9 +563,12 @@ class CameraManager:
         # Check connection state from frame read tracking
         if camera_id in self.usb_connection_state:
             is_connected = self.usb_connection_state[camera_id]["is_connected"]
-            
-            # Secondary check: verify device is still accessible
             device_index = self.cameras[camera_id]["device_index"]
+            # Avoid a second VideoCapture on the same index while CamGear is active:
+            # on Windows this often breaks MSMF capture (grab error -1072873821).
+            if is_connected:
+                return True
+            # Secondary check: verify device is still accessible (reconnect polling)
             device_available = self.is_camera_connected(device_index)
             
             # Update state if device check differs

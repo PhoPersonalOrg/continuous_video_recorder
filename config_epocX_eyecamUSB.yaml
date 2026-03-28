@@ -1,0 +1,67 @@
+video:
+  resolution: [640, 480]
+  fps: 30
+  codec: "H264"  # or "H264" if avc1 fails on your system
+  quality: "medium"
+  compression_mode: true   # Use FFMPEG (WriteGear compression mode) instead of OpenCV
+  
+detection:
+  face_confidence: 0.5
+  motion_threshold: 30
+  face_check_interval: 5  # Check face every N frames
+  
+buffer:
+  absence_timeout: 35  # seconds
+  
+storage:
+  output_dir: "M:/ScreenRecordings/REC_continuous_video_recorder" #  "./recordings"  # Change this to your desired output directory
+  min_duration: 5  # minimum seconds to save a video
+  auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
+  filename_format: "CAM_epocXEyeCamUSB_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%"  # Filename format with datetime placeholders: %YYYY%, %MM%, %DD%, %HH%, %MIN%, %SS%
+  audio_enabled: true
+  audio_device: "Microphone HD Pro Webcam C920"
+  
+webcam:
+  # Support both single camera (device_index) and multiple cameras (devices)
+  # For single camera, use: device_index: 0
+  # For multiple cameras, use: devices: [0, 1]
+  device_index: 0  # Legacy single camera support
+  # devices: [0]  # Uncomment and specify list of device indices for multiple cameras
+  # Optional per-camera settings (uses video defaults if not specified)
+  camera_0:
+    # name: Optional[str]  # Optional: camera name for identification (can be omitted)
+    name: "USB Camera"
+    mode: "usb_continuous"  # Records continuously while USB connected
+    resolution: [640, 480]
+    fps: 30
+    
+  # camera_0:
+  #   resolution: [1280, 720]
+  #   fps: 24
+  # camera_1:
+  #   resolution: [1920, 1080]
+  #   fps: 30
+
+lsl:
+  enabled: true
+  stream_name: "VideoRecorderMarkers"
+  stream_type: "Markers"
+  source_id: "continuous_video_recorder"
+  marker_start: "RECORDING_START"
+  marker_stop: "RECORDING_STOP"
+  include_metadata: true  # Include filename, session ID in marker metadata
+
+preview:
+  enabled: true
+  update_interval_ms: 30  # Frame update interval (~33 FPS)
+  show_timestamp: true    # Show timestamp overlay on frames
+  preview_resolution: [640, 480]  # Optional: downscale preview (leave empty for full resolution)
+  
+
+# Web UI Configuration
+web_ui:
+  enabled: true  # Enable/disable web-based stream viewer
+  port: 5000  # HTTP server port (1024-65535)
+  host: "0.0.0.0"  # Bind address (0.0.0.0 = all interfaces, 127.0.0.1 = localhost only)
+  jpeg_quality: 85  # JPEG encoding quality (1-100, higher = better quality but larger size)
+  max_buffer_size: 2  # Maximum frames to buffer per camera
