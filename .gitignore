@@ -15,3 +15,4 @@ continuous_video_recorder.egg-info/top_level.txt
 recordings/*.mp4
 .cursorindexingignore.bak
 .cursorindexingignore
+**/*.egg-info

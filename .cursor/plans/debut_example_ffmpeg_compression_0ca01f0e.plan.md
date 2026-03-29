@@ -20,7 +20,7 @@ Use **compression mode (FFMPEG)** for recording in the debut example while still
 ## Approach
 
 1. **Add compression-mode support to VideoRecorder** so the rest of the app (and the example) can use FFMPEG without duplicating logic.
-2. **Drive it from config**: introduce a `video.compression_mode` (or similar) and, when True, build FFMPEG `output_params` from existing `video.*` keys.
+2. **Drive it from config**: introduce a `video.compression_mode` (or similar) and, when True, build FFMPEG `output_params` from existing `video.`* keys.
 3. **Wire the example** to load the same YAML and enable compression (either set `config["video"]["compression_mode"] = True` after load or add the key to the YAML).
 
 No change to the example’s flow beyond ensuring it uses the same config path and that the config (or a small override) turns on compression mode.

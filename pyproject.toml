@@ -21,6 +21,10 @@ dependencies = [
     "vidgear>=0.3.3,<0.3.4",
 ]
 
+[project.scripts]
+debut-example = "examples.debut_example:main"
+epocx-eyecam-usb = "examples.epocXEyeCamUSB_example:main"
+
 [project.optional-dependencies]
 windows = [
     "WMI>=1.5.1",
@@ -38,4 +42,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src"]
+include = ["src", "examples"]
