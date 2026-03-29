@@ -19,7 +19,12 @@ dependencies = [
     "pytest>=8.4.2",
     "wmi>=1.5.1",
     "vidgear>=0.3.3,<0.3.4",
+    "phopylslhelper>=1.0.0",
 ]
+
+[tool.uv.sources]
+phopylslhelper = { path = "../PhoPyLSLhelper", editable = true }
+
 
 [project.scripts]
 debut-example = "examples.debut_example:main"

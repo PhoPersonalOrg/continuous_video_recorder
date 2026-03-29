@@ -1,0 +1,4 @@
+[tool.uv.sources]
+phopylslhelper = { path = "../PhoPyLSLhelper", editable = true }
+# pyphocorehelpers = { path = "../pyPhoCoreHelpers", editable = true }
+# phopymnehelper = { path = "../PhoPyMNEHelper", editable = true }
