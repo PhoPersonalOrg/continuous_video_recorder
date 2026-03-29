@@ -1,18 +1,30 @@
 """LSL marker stream for recording start/stop events."""
+from __future__ import annotations
+
+import json
 import logging
-from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    from pylsl import StreamInfo, StreamOutlet
 
 logger = logging.getLogger(__name__)
 
 try:
     import pylsl
     from pylsl import StreamInfo, StreamOutlet
-    from phopylslhelper.easy_time_sync import EasyTimeSyncParsingMixin, readable_dt_str, from_readable_dt_str
-    LSL_AVAILABLE = True
+    from phopylslhelper.easy_time_sync import EasyTimeSyncParsingMixin
+    lsl_available = True
 except ImportError:
     LSL_AVAILABLE = False
     logger.warning("pylsl not available. LSL triggers will be disabled.")
+
+    class EasyTimeSyncParsingMixin:
+        def init_EasyTimeSyncParsingMixin(self) -> None:
+            pass
+
+        def EasyTimeSyncParsingMixin_add_lsl_outlet_info(self, info: Any) -> Any:
+            return info
 
 
 class LSLTrigger(EasyTimeSyncParsingMixin):
@@ -44,11 +56,10 @@ class LSLTrigger(EasyTimeSyncParsingMixin):
     
 
     def add_lsl_outlet_info_common(self, info: StreamInfo) -> StreamInfo:
-        """ adds common LSL metadata
-        """
+        """Adds common LSL metadata and phopylslhelper time-sync fields."""
         # Add some metadata
         info.desc().append_child_value("manufacturer", "ContinuousVideoRecorder")
-        info.desc().append_child_value("version", "0.3.0")
+        info.desc().append_child_value("version", "0.3.1")
         info.desc().append_child_value("description", "Recording start/stop markers with multi-camera support")
 
         ## add a custom timestamp field to the stream info:
@@ -56,26 +67,9 @@ class LSLTrigger(EasyTimeSyncParsingMixin):
         return info
     
 
-    # def get_lsl_outlet_camera_markers_stream_info(self) -> StreamInfo:
-    #     """Create LSL stream for EEG sensor data"""
-    #     info = self.add_lsl_outlet_info_common(info=info)
-    #     return info
-
-    # def get_lsl_outlet_motion_stream_info(self) -> StreamInfo:
-    #     """Create LSL stream info for motion sensor data (accelerometer + gyroscope)"""
-    #     info = self.add_lsl_outlet_info_common(info=info)
-    #     return info
-    
-
     def get_lsl_outlet_camera_markers_stream_info(self) -> StreamInfo:
-        """ 
-        raw_packet_outlet = None
-        if self.is_reverse_engineer_mode:
-            raw_packet_outlet = StreamOutlet(self.get_lsl_outlet_raw_debugging_stream_info())
-            print(f'Setup raw_packet_outlet (for reverse-engineering)')
-            
-        """
-
+        """Build StreamInfo for the irregular-rate string marker outlet (optional JSON metadata channel)."""
+        assert lsl_available and pylsl is not None and StreamInfo is not None
         stream_name = self.config.get("stream_name", "VideoRecorderMarkers")
         stream_type = self.config.get("stream_type", "Markers")
         source_id = self.config.get("source_id", "continuous_video_recorder")
@@ -97,11 +91,18 @@ class LSLTrigger(EasyTimeSyncParsingMixin):
         return info
 
 
+    def _build_marker_sample(self, marker_value: str, metadata: Optional[Dict[str, Any]]) -> list[str]:
+        """One string channel, or marker + JSON when include_metadata is enabled."""
+        marker: list[str] = [marker_value]
+        if self.config.get("include_metadata", False):
+            metadata_str = json.dumps(metadata) if metadata else "{}"
+            marker.append(metadata_str)
+        return marker
 
 
     def _create_stream(self) -> None:
         """Create LSL marker stream outlet."""
-        if not LSL_AVAILABLE:
+        if not lsl_available:
             return
         info = self.get_lsl_outlet_camera_markers_stream_info()
         self.outlet = pylsl.StreamOutlet(info)
@@ -118,15 +119,8 @@ class LSLTrigger(EasyTimeSyncParsingMixin):
             return
         
         try:
-            marker_value = self.config.get("marker_start", "RECORDING_START")
-            marker = [marker_value]
-            
-            if self.config.get("include_metadata", False) and metadata:
-                # Append metadata as JSON string
-                import json
-                metadata_str = json.dumps(metadata)
-                marker.append(metadata_str)
-            
+            marker_value = str(self.config.get("marker_start", "RECORDING_START"))
+            marker = self._build_marker_sample(marker_value, metadata)
             self.outlet.push_sample(marker)
             logger.debug(f"LSL marker sent: {marker_value}")
         except Exception as e:
@@ -143,15 +137,8 @@ class LSLTrigger(EasyTimeSyncParsingMixin):
             return
         
         try:
-            marker_value = self.config.get("marker_stop", "RECORDING_STOP")
-            marker = [marker_value]
-            
-            if self.config.get("include_metadata", False) and metadata:
-                # Append metadata as JSON string
-                import json
-                metadata_str = json.dumps(metadata)
-                marker.append(metadata_str)
-            
+            marker_value = str(self.config.get("marker_stop", "RECORDING_STOP"))
+            marker = self._build_marker_sample(marker_value, metadata)
             self.outlet.push_sample(marker)
             logger.debug(f"LSL marker sent: {marker_value}")
         except Exception as e:
@@ -167,4 +154,3 @@ class LSLTrigger(EasyTimeSyncParsingMixin):
                 logger.info("LSL stream closed")
             except Exception as e:
                 logger.warning(f"Error closing LSL stream: {e}")
-

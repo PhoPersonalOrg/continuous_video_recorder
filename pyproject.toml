@@ -1,6 +1,6 @@
 [project]
 name = "continuous-video-recorder"
-version = "0.3.0"
+version = "0.3.1"
 description = "Continuous video recorder with presence detection for performance monitoring"
 readme = "README.md"
 requires-python = ">=3.9.13"
