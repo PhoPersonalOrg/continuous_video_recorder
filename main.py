@@ -43,7 +43,7 @@ class ContinuousVideoRecorder:
         self.detector = PresenceDetector(self.config)
         self.recorder = VideoRecorder(self.config)  # Primary recorder for single camera mode
         self.recorders: Dict[int, VideoRecorder] = {}  # Multiple recorders for multi-camera mode
-        self.lsl_trigger = LSLTrigger(self.config)
+        self.lsl_trigger = LSLTrigger(self.config, camera_id=0)
         
         # State management
         self.state = RecordingState.IDLE

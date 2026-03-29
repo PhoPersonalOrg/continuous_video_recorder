@@ -53,7 +53,7 @@ class UsbContinuousRecorder:
             self.camera_manager = None
             return False
         self.video_recorder = VideoRecorder(self.config)
-        self.lsl_trigger = LSLTrigger(self.config)
+        self.lsl_trigger = LSLTrigger(self.config, camera_id)
         return True
 
 

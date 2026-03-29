@@ -39,6 +39,7 @@ class ConfigLoader:
         },
         "lsl": {
             "enabled": True,
+            "auto_source_id": True,
             "stream_name": "VideoRecorderMarkers",
             "stream_type": "Markers",
             "source_id": "continuous_video_recorder",
@@ -142,6 +143,7 @@ class ConfigLoader:
         
         # Validate LSL settings
         assert isinstance(config["lsl"]["enabled"], bool)
+        assert isinstance(config["lsl"].get("auto_source_id", True), bool)
         
         # Validate preview settings
         assert isinstance(config["preview"]["enabled"], bool)

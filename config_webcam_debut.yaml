@@ -60,7 +60,7 @@ lsl:
   enabled: true
   stream_name: "VideoRecorderMarkers"
   stream_type: "Markers"
-  source_id: "continuous_video_recorder"
+  auto_source_id: true
   marker_start: "RECORDING_START"
   marker_stop: "RECORDING_STOP"
   include_metadata: true  # Include filename, session ID in marker metadata

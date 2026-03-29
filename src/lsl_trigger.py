@@ -5,6 +5,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from src.lsl_source_id import compute_lsl_source_id
+
 if TYPE_CHECKING:
     from pylsl import StreamInfo, StreamOutlet
 
@@ -16,7 +18,7 @@ try:
     from phopylslhelper.easy_time_sync import EasyTimeSyncParsingMixin
     lsl_available = True
 except ImportError:
-    LSL_AVAILABLE = False
+    lsl_available = False
     logger.warning("pylsl not available. LSL triggers will be disabled.")
 
     class EasyTimeSyncParsingMixin:
@@ -29,27 +31,30 @@ except ImportError:
 
 class LSLTrigger(EasyTimeSyncParsingMixin):
     """LSL marker stream for sending recording events."""
-    
-    def __init__(self, config: Dict[str, Any]):
+
+    def __init__(self, config: Dict[str, Any], camera_id: int = 0):
         """Initialize LSL trigger system.
-        
+
         Args:
-            config: Configuration dictionary with LSL settings.
+            config: Full application configuration (uses ``lsl`` and ``webcam`` for outlet identity).
+            camera_id: Camera index for ``compute_lsl_source_id`` when ``lsl.auto_source_id`` is true.
         """
-        self.config = config.get("lsl", {})
-        self.enabled = self.config.get("enabled", False) and LSL_AVAILABLE
+        self.config = dict(config.get("lsl", {}))
+        if self.config.get("auto_source_id", True):
+            self.config["source_id"] = compute_lsl_source_id(config, camera_id)
+        self.enabled = self.config.get("enabled", False) and lsl_available
         self.outlet: Optional[StreamOutlet] = None
         
         if self.enabled:
             try:
                 self.init_EasyTimeSyncParsingMixin()
                 self._create_stream()
-                logger.info("LSL marker stream created successfully")
+                logger.info("LSL marker stream created successfully (source_id=%s)", self.config.get("source_id"))
             except Exception as e:
                 logger.warning(f"Failed to create LSL stream: {e}. Continuing without LSL.")
                 self.enabled = False
         else:
-            if not LSL_AVAILABLE:
+            if not lsl_available:
                 logger.info("LSL not available (pylsl not installed)")
             else:
                 logger.info("LSL disabled in configuration")
