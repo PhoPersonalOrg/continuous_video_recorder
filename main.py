@@ -14,6 +14,7 @@ from src.detector import PresenceDetector
 from src.recorder import VideoRecorder
 from src.lsl_trigger import LSLTrigger
 from src.utils import setup_logging, setup_signal_handlers
+from src.terminal_hotkey import start_manual_split_hotkey_thread
 
 
 class RecordingState(Enum):
@@ -60,6 +61,9 @@ class ContinuousVideoRecorder:
         
         # Shutdown flag
         self.shutdown_requested = False
+        self.manual_split_seq = 0
+        self.manual_split_ack_seq = 0
+        self.manual_split_lock = threading.Lock()
         
         # Setup signal handlers
         setup_signal_handlers(self.shutdown)
@@ -204,7 +208,11 @@ class ContinuousVideoRecorder:
                 "detector": detector,
                 "state": RecordingState.IDLE,
                 "buffer_start_time": None,
+                "manual_split_ack_seq": 0,
             }
+        
+        hkey = self.config.get("hotkeys", {}).get("manual_split_enabled", True)
+        start_manual_split_hotkey_thread(self._bump_manual_split_seq, enabled=hkey, logger=self.logger, should_stop=lambda: self.shutdown_requested)
         
         # Start recording threads for each camera
         threads = []
@@ -289,6 +297,14 @@ class ContinuousVideoRecorder:
                         new_file = recorder.split_recording()
                         if new_file and old_file:
                             self.logger.info(f"{cam_config['name']}: Auto-split at {old_duration:.1f}s - New file: {new_file.name}")
+                    if self.manual_split_seq > cam_data["manual_split_ack_seq"]:
+                        if recorder.is_recording():
+                            old_file = recorder.get_current_file()
+                            old_duration = recorder.get_duration()
+                            new_file = recorder.split_recording()
+                            if new_file and old_file:
+                                self.logger.info(f"{cam_config['name']}: Manual split at {old_duration:.1f}s - New file: {new_file.name}")
+                        cam_data["manual_split_ack_seq"] = self.manual_split_seq
                     
                     recorder.write_frame(frame)
                 
@@ -355,6 +371,37 @@ class ContinuousVideoRecorder:
             self.buffer_start_time = time.time()
             self.logger.debug("Entered buffering state")
     
+    
+    def _bump_manual_split_seq(self) -> None:
+        with self.manual_split_lock:
+            self.manual_split_seq += 1
+    
+    
+    def _split_primary_with_lsl(self, reason: str) -> bool:
+        if not self.recorder.is_recording():
+            return False
+        old_file = self.recorder.get_current_file()
+        old_duration = self.recorder.get_duration()
+        new_file = self.recorder.split_recording()
+        if not (new_file and old_file):
+            return False
+        metadata = {"filename": old_file.name, "session_id": old_file.stem, "duration": old_duration, "timestamp": time.time(), "reason": reason}
+        self.lsl_trigger.send_stop_marker(metadata)
+        metadata = {"filename": new_file.name, "session_id": new_file.stem, "timestamp": time.time(), "reason": reason}
+        self.lsl_trigger.send_start_marker(metadata)
+        self.logger.info(f"Split ({reason}): segment at {old_duration:.1f}s — new file: {new_file.absolute()}")
+        return True
+    
+    
+    def _consume_manual_split_request_primary(self) -> None:
+        if self.manual_split_seq <= self.manual_split_ack_seq:
+            return
+        seq = self.manual_split_seq
+        if (self.state == RecordingState.RECORDING or self.state == RecordingState.BUFFERING) and self.recorder.is_recording():
+            self._split_primary_with_lsl("manual_split")
+        self.manual_split_ack_seq = seq
+    
+    
     def run(self) -> None:
         """Main application loop."""
         self.logger.info("Starting continuous video recorder...")
@@ -381,7 +428,9 @@ class ContinuousVideoRecorder:
             return
         
         # Single camera mode
-        self.logger.info("Entering main loop (single camera). Press Ctrl+C to stop.")
+        self.logger.info("Entering main loop (single camera). Ctrl+S: new file; Ctrl+C: stop.")
+        hkey = self.config.get("hotkeys", {}).get("manual_split_enabled", True)
+        start_manual_split_hotkey_thread(self._bump_manual_split_seq, enabled=hkey, logger=self.logger, should_stop=lambda: self.shutdown_requested)
         
         last_face_check_time = time.time()
         frame_time = 1.0 / self.config["video"]["fps"]
@@ -421,36 +470,13 @@ class ContinuousVideoRecorder:
                         if self.buffer_start_time and (current_time - self.buffer_start_time) >= self.absence_timeout:
                             self._stop_recording()
                 
+                self._consume_manual_split_request_primary()
+                
                 # Write frame if recording
                 if self.state == RecordingState.RECORDING or self.state == RecordingState.BUFFERING:
                     # Check for auto-split (every hour)
                     if self.recorder.should_split():
-                        old_file = self.recorder.get_current_file()
-                        old_duration = self.recorder.get_duration()
-                        
-                        # Split to new file
-                        new_file = self.recorder.split_recording()
-                        
-                        if new_file and old_file:
-                            # Send LSL stop marker for old file
-                            metadata = {
-                                "filename": old_file.name,
-                                "session_id": old_file.stem,
-                                "duration": old_duration,
-                                "timestamp": time.time(),
-                                "reason": "auto_split"
-                            }
-                            self.lsl_trigger.send_stop_marker(metadata)
-                            
-                            # Send LSL start marker for new file
-                            metadata = {
-                                "filename": new_file.name,
-                                "session_id": new_file.stem,
-                                "timestamp": time.time(),
-                                "reason": "auto_split"
-                            }
-                            self.lsl_trigger.send_start_marker(metadata)
-                            self.logger.info(f"Auto-split: Split recording at {old_duration:.1f}s - New file: {new_file.absolute()}")
+                        self._split_primary_with_lsl("auto_split")
                     
                     # Write frame to current recording
                     self.recorder.write_frame(frame)

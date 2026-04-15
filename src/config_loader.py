@@ -53,6 +53,9 @@ class ConfigLoader:
             "show_timestamp": True,
             "preview_resolution": [640, 480],  # Optional downscaling for preview
         },
+        "hotkeys": {
+            "manual_split_enabled": True,
+        },
     }
     
     @classmethod
@@ -152,6 +155,8 @@ class ConfigLoader:
         if config["preview"]["preview_resolution"]:
             assert isinstance(config["preview"]["preview_resolution"], list) and len(config["preview"]["preview_resolution"]) == 2
             assert all(isinstance(x, int) and x > 0 for x in config["preview"]["preview_resolution"])
+        
+        assert isinstance(config.get("hotkeys", {}).get("manual_split_enabled", True), bool)
         
         logger.info("Configuration validated successfully")
 

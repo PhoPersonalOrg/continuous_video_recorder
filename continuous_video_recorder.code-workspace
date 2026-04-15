@@ -2,6 +2,9 @@
 	"folders": [
 		{
 			"path": "."
+		},
+		{
+			"path": "../uv-launcher"
 		}
 	],
 	"settings": {
@@ -39,6 +42,7 @@
 				"envManager": "ms-python.python:venv",
 				"packageManager": "ms-python.python:pip"
 			}
-		]
+		],
+		"powershell.cwd": "continuous_video_recorder"
 	}
 }

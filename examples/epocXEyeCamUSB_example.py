@@ -53,6 +53,9 @@ def main():
     if not recorder.initialize(camera_id=0):
         print("ERROR: Initialization failed (camera or output directory).")
         sys.exit(1)
+    preview_enabled = bool(config.get("preview", {}).get("enabled", False))
+    if preview_enabled:
+        print("Interactive preview opens automatically. Closing it will not stop recording. Press 'p' in the terminal to reopen it.")
     print("Recording starts automatically. Press Ctrl+C to stop.\n")
     recorder.run(camera_id=0)
 
