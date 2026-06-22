@@ -145,8 +145,9 @@ def main():
     print("\nStarting recording...")
     try:
         video_recorder = VideoRecorder(config)
+        print(f"  {video_recorder.get_audio_status_line()}")
         output_file = video_recorder.start_recording()
-        
+
         if output_file is None:
             print("ERROR: Failed to start recording. Please check:")
             print("  - Output directory is writable")

@@ -27,6 +27,8 @@ A robust Python application that continuously monitors webcam(s), detects user p
 
 ```bash
 # Using uv (recommended)
+uv tool install https://github.com/CommanderPho/uv-deps-switcher.git
+uv-deps-switcher dev --yes
 uv sync --all-extras
 
 # Or using pip
