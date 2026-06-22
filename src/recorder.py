@@ -50,8 +50,34 @@ class VideoRecorder:
         codec_to_ffmpeg = {"H264": "libx264", "avc1": "libx264", "h264": "libx264"}
         vcodec = codec_to_ffmpeg.get(self.codec, "libx264")
         params = {"-vcodec": vcodec, "-crf": crf, "-preset": preset, "-output_dimensions": self.resolution, "-input_framerate": self.fps}
-        if self.output_extension == "mkv":
-            params["-f"] = "matroska"
+
+        # Audio configuration via FFMPEG
+        audio_enabled = self.storage_config.get("audio_enabled", False)
+        audio_device = self.storage_config.get("audio_device")
+
+        if audio_enabled and audio_device:
+            import platform
+            if platform.system() == "Windows":
+                # FFMPEG input params for dshow audio on Windows
+                params["-f"] = "dshow"
+                params["-i"] = f"audio={audio_device}"
+                params["-acodec"] = "aac"
+            else:
+                logger.warning("Audio capture is currently only supported via dshow on Windows. Ignoring audio configuration.")
+
+        if self.output_extension == "mkv" and "-f" not in params:
+            # Only set matroska format if we haven't overridden the input format (e.g. for dshow)
+            # Actually, WriteGear output_params might mix input and output FFMPEG commands.
+            # But WriteGear treats '-f' as the OUTPUT format if passed normally.
+            # If we need FFMPEG input, we should use input FFmpeg parameters formatting supported by vidgear.
+            # Vidgear WriteGear uses `"-input_framerate"` etc for inputs.
+            # Standard FFMPEG commands like `-f` or `-i` are treated as output commands unless handled specially by WriteGear.
+            # Let's pass FFMPEG output format.
+            pass
+
+        if self.output_extension == "mkv" and not audio_enabled:
+             params["-f"] = "matroska"
+
         return params
 
 
@@ -60,16 +86,50 @@ class VideoRecorder:
         if self.compression_mode:
             output_params = self._build_ffmpeg_output_params()
             try:
-                return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params)
+                # Add '-disable_force_termination': True to allow FFMPEG errors to throw an exception
+                output_params_copy = output_params.copy()
+                # On Windows, missing dshow devices will cause FFMPEG to exit immediately, but sometimes WriteGear might hide the error.
+                # WriteGear raises an exception during `write` or `__init__` depending on when the process dies.
+                return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params_copy)
             except Exception as e:
-                logger.warning(f"Failed to open FFMPEG writer: {e}, trying without preset")
-                output_params = self._build_ffmpeg_output_params()
-                output_params.pop("-preset", None)
-                try:
-                    return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params)
-                except Exception as e2:
-                    logger.error(f"Failed to initialize FFMPEG video writer: {e2}")
-                    return None
+                logger.warning(f"Failed to open FFMPEG writer: {e}")
+
+                # If audio was enabled and it failed, maybe it's because the audio device doesn't exist
+                if "-i" in output_params and "audio=" in str(output_params.get("-i", "")):
+                    logger.error(f"Audio device initialization failed. Details: {e}")
+                    import builtins
+                    # In some setups, we might not have a terminal to read from. Handle input gracefully.
+                    try:
+                        resp = builtins.input("Failed to initialize FFMPEG with audio. Press [Enter] to continue without audio, or [Ctrl+C] to abort...")
+                    except EOFError:
+                        pass
+
+                    logger.warning("Attempting to record without audio...")
+                    output_params.pop("-f", None)
+                    output_params.pop("-i", None)
+                    output_params.pop("-acodec", None)
+                    if self.output_extension == "mkv":
+                        output_params["-f"] = "matroska"
+
+                    try:
+                        return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params)
+                    except Exception as e2:
+                        logger.warning(f"Failed to open FFMPEG writer without audio: {e2}, trying without preset")
+                        output_params.pop("-preset", None)
+                        try:
+                            return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params)
+                        except Exception as e3:
+                            logger.error(f"Failed to initialize FFMPEG video writer: {e3}")
+                            return None
+                else:
+                    logger.warning("Trying without preset")
+                    output_params.pop("-preset", None)
+                    try:
+                        return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params)
+                    except Exception as e2:
+                        logger.error(f"Failed to initialize FFMPEG video writer: {e2}")
+                        return None
+
         output_params = {"-fourcc": self.codec}
         try:
             return WriteGear(output=str(file_path), compression_mode=False, logging=True, **output_params)
@@ -139,7 +199,56 @@ class VideoRecorder:
             self.frame_count += 1
             return True
         except Exception as e:
+            # WriteGear throws ValueError with string message when there is broken pipe error in current version.
+            error_str = str(e)
             logger.error(f"Failed to write frame: {e}")
+
+            # If the FFMPEG pipe is broken because audio device initialization failed, WriteGear throws an exception.
+            # We can detect this, try to alert the user, and restart recording without audio.
+            if self.compression_mode and ("BrokenPipeError" in error_str or "Wrong values passed to FFmpeg Pipe" in error_str or "pipe broken" in error_str.lower() or "pipe" in error_str.lower() or e.__class__.__name__ == "ValueError" or "WriteGear" in error_str):
+                # Also check if audio was enabled, as it is a common cause for failure
+                if self.storage_config.get("audio_enabled", False):
+                    logger.error("FFMPEG pipe broken, possibly due to audio device failure. Disabling audio and trying to restart...")
+
+                    import builtins
+                    try:
+                        builtins.input("Failed to write to FFMPEG. Press [Enter] to continue without audio, or [Ctrl+C] to abort...")
+                    except EOFError:
+                        pass
+                    except KeyboardInterrupt:
+                        raise
+
+                    # Disable audio for future
+                    self.storage_config["audio_enabled"] = False
+
+                    # Try restarting the recording completely
+                    old_file = self.current_file
+                    self.writer = None
+                    if old_file and old_file.exists():
+                        try:
+                            old_file.unlink()
+                        except:
+                            pass
+
+                    logger.info("Restarting recording without audio...")
+                    from src.utils import generate_timestamped_filename
+                    self.current_file = generate_timestamped_filename(prefix="Record", extension=self.output_extension, output_dir=self.output_dir, filename_format=self.filename_format)
+                    self.writer = self._create_writer(self.current_file)
+                    if self.writer is None:
+                        self.current_file = None
+                        return False
+
+                    self.start_time = time.time()
+                    self.frame_count = 0
+
+                    try:
+                        self.writer.write(frame)
+                        self.frame_count += 1
+                        return True
+                    except Exception as e2:
+                        logger.error(f"Failed to write frame even without audio: {e2}")
+                        return False
+
             return False
     
     def stop_recording(self) -> Optional[Path]:
