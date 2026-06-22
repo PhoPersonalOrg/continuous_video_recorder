@@ -27,7 +27,7 @@ capture:
   backend: "dshow_av"
   rtbufsize: "512M"
   write_timing_sidecar: true
-  use_wallclock_timestamps: false
+  use_wallclock_timestamps: true
 
 
 webcam:
