@@ -60,6 +60,12 @@ class ConfigLoader:
         "hotkeys": {
             "manual_split_enabled": True,
         },
+        "capture": {
+            "backend": "frame_pipe",
+            "rtbufsize": "512M",
+            "write_timing_sidecar": True,
+            "use_wallclock_timestamps": False,
+        },
     }
     
     @classmethod
@@ -167,6 +173,11 @@ class ConfigLoader:
             assert all(isinstance(x, int) and x > 0 for x in config["preview"]["preview_resolution"])
         
         assert isinstance(config.get("hotkeys", {}).get("manual_split_enabled", True), bool)
-        
+
+        capture_config = config.get("capture", {})
+        assert capture_config.get("backend", "frame_pipe") in ["frame_pipe", "dshow_av"]
+        assert isinstance(capture_config.get("write_timing_sidecar", True), bool)
+        assert isinstance(capture_config.get("use_wallclock_timestamps", False), bool)
+
         logger.info("Configuration validated successfully")
 

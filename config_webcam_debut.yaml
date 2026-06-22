@@ -23,6 +23,11 @@ storage:
   # Must match exact DirectShow name: ffmpeg -list_devices true -f dshow -i dummy
   audio_device: "Microphone (HD Pro Webcam C920)"
 
+capture:
+  backend: "dshow_av"
+  rtbufsize: "512M"
+  write_timing_sidecar: true
+  use_wallclock_timestamps: false
 
 
 webcam:

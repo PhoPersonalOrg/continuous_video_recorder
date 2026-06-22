@@ -16,3 +16,6 @@ recordings/*.mp4
 .cursorindexingignore.bak
 .cursorindexingignore
 **/*.egg-info
+_manual_verify_recordings/CAM_2026-06-22T185641.mkv
+_manual_verify_recordings/CAM_2026-06-22T185641.mkv.timing.json
+_manual_verify_recordings/CAM_2026-06-22T185641.wav
