@@ -32,7 +32,7 @@
 			// "panel.background": "#f6f8fa",
 			// "panel.border": "#a0a4ab"
 		},
-		"workbench.preferredLightColorTheme": "Default Light+",
+		"workbench.preferredLightColorTheme": "Light+",
 		"python.languageServer": "None",
 		"specstory.cloudSync.enabled": "never",
 		"python.analysis.typeCheckingMode": "off",
