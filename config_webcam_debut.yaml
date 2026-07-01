@@ -20,8 +20,14 @@ storage:
   auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
   filename_format: "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%"  # Debut-style filename with datetime placeholders
   audio_enabled: true
-  audio_device: "Microphone HD Pro Webcam C920"
+  # Must match exact DirectShow name: ffmpeg -list_devices true -f dshow -i dummy
+  audio_device: "Microphone (HD Pro Webcam C920)"
 
+capture:
+  backend: "dshow_av"
+  rtbufsize: "512M"
+  write_timing_sidecar: true
+  use_wallclock_timestamps: true
 
 
 webcam:

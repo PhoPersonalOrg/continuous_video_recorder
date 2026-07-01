@@ -32,6 +32,10 @@ class ConfigLoader:
             "auto_split_duration": 3600,  # 1 hour in seconds
             "filename_format": "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%",
             "output_extension": "mkv",  # mkv is crash-safe; use "mp4" for traditional finalize-at-end
+            "audio_enabled": False,
+            "audio_device": None,
+            "audio_sample_rate": 44100,
+            "audio_channels": 2,
         },
         "webcam": {
             "device_index": 0,  # Legacy single camera support
@@ -55,6 +59,12 @@ class ConfigLoader:
         },
         "hotkeys": {
             "manual_split_enabled": True,
+        },
+        "capture": {
+            "backend": "frame_pipe",
+            "rtbufsize": "512M",
+            "write_timing_sidecar": True,
+            "use_wallclock_timestamps": False,
         },
     }
     
@@ -119,7 +129,13 @@ class ConfigLoader:
         assert config["storage"]["min_duration"] >= 0
         assert config["storage"]["auto_split_duration"] > 0
         assert config["storage"].get("output_extension", "mkv") in ["mkv", "mp4"]
-        
+        assert isinstance(config["storage"].get("audio_enabled", False), bool)
+        assert int(config["storage"].get("audio_sample_rate", 44100)) > 0
+        assert int(config["storage"].get("audio_channels", 2)) > 0
+        if config["storage"].get("audio_enabled", False):
+            audio_device = config["storage"].get("audio_device")
+            assert audio_device is not None and str(audio_device).strip(), "storage.audio_device is required when storage.audio_enabled is true"
+
         # Validate webcam settings
         webcam_config = config["webcam"]
         # Support both legacy device_index and new devices list
@@ -157,6 +173,11 @@ class ConfigLoader:
             assert all(isinstance(x, int) and x > 0 for x in config["preview"]["preview_resolution"])
         
         assert isinstance(config.get("hotkeys", {}).get("manual_split_enabled", True), bool)
-        
+
+        capture_config = config.get("capture", {})
+        assert capture_config.get("backend", "frame_pipe") in ["frame_pipe", "dshow_av"]
+        assert isinstance(capture_config.get("write_timing_sidecar", True), bool)
+        assert isinstance(capture_config.get("use_wallclock_timestamps", False), bool)
+
         logger.info("Configuration validated successfully")
 

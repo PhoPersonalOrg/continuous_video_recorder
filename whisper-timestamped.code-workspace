@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../whisper-timestamped"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../PhoLogToLabStreamingLayer"
+		}
+	],
+	"settings": {}
+}
