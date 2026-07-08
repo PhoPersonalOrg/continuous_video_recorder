@@ -19,7 +19,7 @@ storage:
   min_duration: 5  # minimum seconds to save a video
   auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
   filename_format: "CAM_epocXEyeCamUSB_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%"  # Filename format with datetime placeholders: %YYYY%, %MM%, %DD%, %HH%, %MIN%, %SS%
-  audio_enabled: true
+  audio_enabled: false
   audio_device: "Microphone (HD Pro Webcam C920)"
   
 webcam:
