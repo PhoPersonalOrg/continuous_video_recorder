@@ -4,9 +4,11 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 from src.dshow_devices import build_dshow_input_string, resolve_dshow_devices_from_config
 from src.timing_sidecar import (
@@ -21,6 +23,9 @@ from src.timing_sidecar import (
 from src.utils import generate_timestamped_filename
 
 logger = logging.getLogger(__name__)
+
+_STDERR_MAX_LINES = 200
+_DRAIN_JOIN_TIMEOUT_S = 2.0
 
 
 class DirectShowAVRecorder:
@@ -61,6 +66,10 @@ class DirectShowAVRecorder:
         self._perf_start: Optional[float] = None
         self._segment_index = 0
         self._ffmpeg_command: List[str] = []
+        self._stderr_lines: Deque[str] = deque(maxlen=_STDERR_MAX_LINES)
+        self._stderr_lock = threading.Lock()
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._last_known_returncode: Optional[int] = None
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -75,6 +84,31 @@ class DirectShowAVRecorder:
     def is_audio_recording(self) -> bool:
         return self.audio_enabled and self.audio_device_name is not None
 
+    def get_ffmpeg_command(self) -> List[str]:
+        return list(self._ffmpeg_command)
+
+    def get_segment_index(self) -> int:
+        return self._segment_index
+
+    def get_last_returncode(self) -> Optional[int]:
+        return self._last_known_returncode
+
+    def get_output_size_bytes(self) -> Optional[int]:
+        if self.current_file is None or not self.current_file.exists():
+            return None
+        try:
+            return self.current_file.stat().st_size
+        except OSError as e:
+            logger.warning("Could not stat output file %s: %s", self.current_file, e)
+            return None
+
+    def get_stderr_tail(self, n: int = 40) -> str:
+        with self._stderr_lock:
+            lines = list(self._stderr_lines)
+        if n > 0:
+            lines = lines[-n:]
+        return "\n".join(lines)
+
     def _quality_params(self) -> tuple[int, str]:
         quality_map = {"low": (28, "fast"), "medium": (23, "medium"), "high": (18, "slow")}
         return quality_map.get(self.quality, (23, "medium"))
@@ -86,6 +120,9 @@ class DirectShowAVRecorder:
         cmd = [
             self.ffmpeg_cmd,
             "-y",
+            "-nostats",
+            "-loglevel",
+            "warning",
             "-rtbufsize",
             self.rtbufsize,
             "-f",
@@ -107,8 +144,40 @@ class DirectShowAVRecorder:
         cmd.append(str(output_file))
         return cmd
 
+    def _drain_stderr(self, proc: subprocess.Popen) -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                text = line.rstrip("\n\r")
+                if text:
+                    with self._stderr_lock:
+                        self._stderr_lines.append(text)
+            ## END for line in stream
+        except Exception as e:
+            logger.debug("stderr drain ended: %s", e)
+
+    def _start_stderr_drain(self, proc: subprocess.Popen) -> None:
+        with self._stderr_lock:
+            self._stderr_lines.clear()
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr,
+            args=(proc,),
+            name="ffmpeg-stderr-drain",
+            daemon=True,
+        )
+        self._stderr_thread.start()
+
+    def _join_stderr_drain(self) -> None:
+        thread = self._stderr_thread
+        self._stderr_thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=_DRAIN_JOIN_TIMEOUT_S)
+
     def _start_process(self, output_file: Path) -> bool:
         self._ffmpeg_command = self.build_ffmpeg_command(output_file)
+        self._last_known_returncode = None
         wall_start = time.time()
         perf_start = time.perf_counter()
         try:
@@ -118,11 +187,13 @@ class DirectShowAVRecorder:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
+                bufsize=1,
             )
         except Exception as e:
             logger.error("Failed to start FFmpeg: %s", e)
             self._process = None
             return False
+        self._start_stderr_drain(self._process)
         popen_return = time.perf_counter()
         self.current_file = output_file
         self.start_time = wall_start
@@ -144,15 +215,16 @@ class DirectShowAVRecorder:
             )
             write_sidecar(self.current_sidecar, self._sidecar_payload)
         logger.info("Started DirectShow recording: %s", output_file.name)
-        logger.debug("FFmpeg command: %s", " ".join(self._ffmpeg_command))
+        logger.info("FFmpeg command: %s", " ".join(self._ffmpeg_command))
         return True
 
     def _stop_process(self) -> Optional[int]:
         if self._process is None:
-            return None
+            return self._last_known_returncode
         returncode: Optional[int] = None
         proc = self._process
         self._process = None
+        stop_path = "quit"
         try:
             if proc.stdin is not None:
                 try:
@@ -163,45 +235,82 @@ class DirectShowAVRecorder:
             try:
                 proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
+                stop_path = "terminate"
                 logger.warning("FFmpeg did not exit after 'q'; terminating")
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
+                    stop_path = "kill"
+                    logger.warning("FFmpeg did not exit after terminate; killing")
                     proc.kill()
                     proc.wait(timeout=5)
             returncode = proc.returncode
-            stderr = ""
-            if proc.stderr is not None:
-                stderr = proc.stderr.read() or ""
-            if stderr.strip():
-                logger.debug("FFmpeg stderr tail: %s", stderr.strip()[-2000:])
+            self._last_known_returncode = returncode
+            if stop_path != "quit" or (returncode is not None and returncode != 0):
+                logger.warning(
+                    "FFmpeg stop path=%s returncode=%s",
+                    stop_path,
+                    returncode,
+                )
+            self._join_stderr_drain()
+            tail = self.get_stderr_tail(40)
+            if tail:
+                logger.debug("FFmpeg stderr tail:\n%s", tail[-2000:])
         except Exception as e:
             logger.warning("Error stopping FFmpeg: %s", e)
+            self._join_stderr_drain()
         return returncode
 
-    def _finalize_current_segment(self, keep_file: bool) -> Optional[Path]:
+    def _write_final_sidecar(
+        self,
+        output_file: Path,
+        sidecar_path: Optional[Path],
+        sidecar_payload: Optional[Dict[str, Any]],
+        returncode: Optional[int],
+        keep_file: bool,
+        wall_stop: float,
+        perf_stop: float,
+    ) -> None:
+        if not self.write_timing_sidecar or not sidecar_path or not sidecar_payload:
+            return
+        ffprobe_data = probe_media_timing(output_file, self.ffprobe_cmd) if keep_file else {}
+        final_payload = finalize_sidecar(
+            sidecar_payload,
+            wall_clock_stop_unix=wall_stop,
+            perf_counter_stop=perf_stop,
+            ffmpeg_returncode=returncode,
+            ffprobe_data=ffprobe_data if keep_file else {"ffprobe_error": "segment discarded"},
+        )
+        write_sidecar(sidecar_path, final_payload)
+        self._sidecar_payload = final_payload
+
+    def _finalize_current_segment(self, keep_file: bool, returncode: Optional[int] = None) -> Optional[Path]:
         if self.current_file is None:
             return None
         output_file = self.current_file
         sidecar_path = self.current_sidecar
         sidecar_payload = self._sidecar_payload
-        returncode = self._stop_process()
+        if returncode is None:
+            returncode = self._stop_process()
+        else:
+            self._last_known_returncode = returncode
+            if self._process is not None:
+                self._process = None
+            self._join_stderr_drain()
         wall_stop = time.time()
         perf_stop = time.perf_counter()
         duration = wall_stop - (self.start_time or wall_stop)
 
-        if self.write_timing_sidecar and sidecar_path and sidecar_payload:
-            ffprobe_data = probe_media_timing(output_file, self.ffprobe_cmd) if keep_file else {}
-            final_payload = finalize_sidecar(
-                sidecar_payload,
-                wall_clock_stop_unix=wall_stop,
-                perf_counter_stop=perf_stop,
-                ffmpeg_returncode=returncode,
-                ffprobe_data=ffprobe_data if keep_file else {"ffprobe_error": "segment discarded"},
-            )
-            write_sidecar(sidecar_path, final_payload)
-            self._sidecar_payload = final_payload
+        self._write_final_sidecar(
+            output_file,
+            sidecar_path,
+            sidecar_payload,
+            returncode,
+            keep_file,
+            wall_stop,
+            perf_stop,
+        )
 
         self.current_file = None
         self.current_sidecar = None
@@ -218,6 +327,25 @@ class DirectShowAVRecorder:
             return None
         logger.info("Saved segment: %s (duration: %.1fs, ffmpeg rc=%s)", output_file.name, duration, returncode)
         return output_file
+
+    def finalize_after_unexpected_exit(self, returncode: Optional[int]) -> Optional[Path]:
+        """Finalize the open segment after FFmpeg has already exited."""
+        if self.current_file is None:
+            logger.error("finalize_after_unexpected_exit: no current file (rc=%s)", returncode)
+            return None
+        duration = time.time() - (self.start_time or time.time())
+        keep_file = duration >= self.min_duration
+        logger.error(
+            "Finalizing after unexpected FFmpeg exit: file=%s duration=%.1fs rc=%s keep=%s",
+            self.current_file.name,
+            duration,
+            returncode,
+            keep_file,
+        )
+        tail = self.get_stderr_tail(40)
+        if tail:
+            logger.error("FFmpeg stderr tail:\n%s", tail)
+        return self._finalize_current_segment(keep_file=keep_file, returncode=returncode)
 
     def start_recording(self) -> Optional[Path]:
         if self._process is not None:
@@ -237,8 +365,11 @@ class DirectShowAVRecorder:
         return output_file
 
     def stop_recording(self) -> Optional[Path]:
-        if self._process is None:
+        if self._process is None and self.current_file is None:
             return None
+        if self._process is None and self.current_file is not None:
+            # Process already gone; still finalize sidecar/file metadata.
+            return self.finalize_after_unexpected_exit(self._last_known_returncode)
         duration = time.time() - (self.start_time or time.time())
         keep_file = duration >= self.min_duration
         return self._finalize_current_segment(keep_file=keep_file)
@@ -275,12 +406,25 @@ class DirectShowAVRecorder:
 
     def split_recording(self) -> Optional[Path]:
         if self._process is None:
+            logger.error("split_recording: no active FFmpeg process")
             return None
+        old_duration = self.get_duration()
+        old_file = self.current_file
+        logger.info(
+            "Splitting recording after %.1fs: closing %s",
+            old_duration,
+            old_file.name if old_file else "(none)",
+        )
         saved = self._finalize_current_segment(keep_file=True)
         if saved is None and self.current_file is not None:
             logger.warning("Auto-split: previous segment was too short and discarded")
         self._segment_index += 1
-        return self.start_recording()
+        new_file = self.start_recording()
+        if new_file is None:
+            logger.error("Auto-split failed: could not start next segment after %s", saved)
+        else:
+            logger.info("Auto-split complete: saved=%s new=%s segment=%s", saved, new_file.name, self._segment_index)
+        return new_file
 
     def poll_process(self) -> Optional[int]:
         if self._process is None:
@@ -288,5 +432,7 @@ class DirectShowAVRecorder:
         rc = self._process.poll()
         if rc is not None:
             logger.error("FFmpeg exited unexpectedly with code %s", rc)
+            self._last_known_returncode = rc
             self._process = None
+            self._join_stderr_drain()
         return rc

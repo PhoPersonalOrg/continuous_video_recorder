@@ -1,6 +1,8 @@
 """Tests for DirectShow device resolution, recorder command building, and timing sidecars."""
+import io
 import json
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -89,6 +91,9 @@ def test_build_ffmpeg_command_single_dshow_input(mock_resolve):
     rec = DirectShowAVRecorder(_base_config())
     cmd = rec.build_ffmpeg_command(Path("out.mkv"))
     assert "-f" in cmd and "dshow" in cmd
+    assert "-nostats" in cmd
+    assert "-loglevel" in cmd
+    assert cmd[cmd.index("-loglevel") + 1] == "warning"
     idx = cmd.index("-i")
     assert cmd[idx + 1] == "video=HD Pro Webcam C920:audio=Microphone (HD Pro Webcam C920)"
     assert cmd.count("-i") == 1
@@ -130,24 +135,31 @@ def test_timing_sidecar_start_and_finalize(tmp_path):
     assert loaded["ffprobe_duration"] == "20.0"
 
 
-@patch("src.dshow_recorder.generate_timestamped_filename")
-@patch("src.dshow_recorder.subprocess.Popen")
-@patch("src.dshow_recorder.resolve_dshow_devices_from_config")
-def test_split_recording_increments_segment(mock_resolve, mock_popen, mock_filename, tmp_path):
-    mock_resolve.return_value = ("HD Pro Webcam C920", "Microphone (HD Pro Webcam C920)")
-    first_file = tmp_path / "CAM_seg0.mkv"
-    second_file = tmp_path / "CAM_seg1.mkv"
-    mock_filename.side_effect = [first_file, second_file]
+def _mock_ffmpeg_proc(stderr_text: str = "") -> MagicMock:
     proc = MagicMock()
     proc.stdin = MagicMock()
-    proc.stderr = MagicMock()
-    proc.stderr.read.return_value = ""
+    proc.stderr = io.StringIO(stderr_text)
     proc.wait.return_value = 0
     proc.returncode = 0
     proc.poll.return_value = None
-    mock_popen.return_value = proc
+    return proc
 
-    rec = DirectShowAVRecorder(_base_config())
+
+@patch("src.dshow_recorder.probe_media_timing", return_value={})
+@patch("src.dshow_recorder.generate_timestamped_filename")
+@patch("src.dshow_recorder.subprocess.Popen")
+@patch("src.dshow_recorder.resolve_dshow_devices_from_config")
+def test_split_recording_increments_segment(mock_resolve, mock_popen, mock_filename, mock_probe, tmp_path):
+    mock_resolve.return_value = ("HD Pro Webcam C920", "Microphone (HD Pro Webcam C920)")
+    first_file = tmp_path / "CAM_seg0.mkv"
+    second_file = tmp_path / "CAM_seg1.mkv"
+    first_file.write_bytes(b"x")
+    mock_filename.side_effect = [first_file, second_file]
+    mock_popen.side_effect = lambda *a, **k: _mock_ffmpeg_proc()
+
+    cfg = _base_config()
+    cfg["storage"]["min_duration"] = 0
+    rec = DirectShowAVRecorder(cfg)
     first = rec.start_recording()
     assert first is not None
     assert rec.get_timing_metadata()["segment_index"] == 0
@@ -156,6 +168,67 @@ def test_split_recording_increments_segment(mock_resolve, mock_popen, mock_filen
     assert second is not None
     assert second != first
     assert rec.get_timing_metadata()["segment_index"] == 1
+
+
+@patch("src.dshow_recorder.probe_media_timing", return_value={"ffprobe_duration": "1.0"})
+@patch("src.dshow_recorder.generate_timestamped_filename")
+@patch("src.dshow_recorder.subprocess.Popen")
+@patch("src.dshow_recorder.resolve_dshow_devices_from_config")
+def test_stderr_drain_captures_tail(mock_resolve, mock_popen, mock_filename, mock_probe, tmp_path):
+    mock_resolve.return_value = ("HD Pro Webcam C920", "Microphone (HD Pro Webcam C920)")
+    out = tmp_path / "CAM_drain.mkv"
+    out.write_bytes(b"x")
+    mock_filename.return_value = out
+    many_lines = "\n".join(f"warn line {i}" for i in range(50)) + "\n"
+    mock_popen.return_value = _mock_ffmpeg_proc(many_lines)
+
+    cfg = _base_config()
+    cfg["storage"]["min_duration"] = 0
+    rec = DirectShowAVRecorder(cfg)
+    assert rec.start_recording() is not None
+    # Allow drain thread to consume StringIO
+    deadline = time.time() + 2.0
+    while time.time() < deadline and "warn line 49" not in rec.get_stderr_tail(50):
+        time.sleep(0.01)
+    ## END while time.time() < deadline and "warn line 49" not in rec.get_stderr_tail(50)
+    tail = rec.get_stderr_tail(10)
+    assert "warn line 49" in tail
+    assert "warn line 40" in tail
+    saved = rec.stop_recording()
+    assert saved == out
+
+
+@patch("src.dshow_recorder.probe_media_timing", return_value={"ffprobe_duration": "12.0"})
+@patch("src.dshow_recorder.generate_timestamped_filename")
+@patch("src.dshow_recorder.subprocess.Popen")
+@patch("src.dshow_recorder.resolve_dshow_devices_from_config")
+def test_finalize_after_unexpected_exit_writes_stop_fields(
+    mock_resolve, mock_popen, mock_filename, mock_probe, tmp_path
+):
+    mock_resolve.return_value = ("HD Pro Webcam C920", "Microphone (HD Pro Webcam C920)")
+    out = tmp_path / "CAM_crash.mkv"
+    out.write_bytes(b"data")
+    mock_filename.return_value = out
+    mock_popen.return_value = _mock_ffmpeg_proc("encoder error\n")
+
+    cfg = _base_config()
+    cfg["storage"]["min_duration"] = 0
+    rec = DirectShowAVRecorder(cfg)
+    assert rec.start_recording() is not None
+    sidecar = rec.get_current_sidecar()
+    assert sidecar is not None
+    assert "wall_clock_stop_unix" not in read_sidecar(sidecar)
+
+    # Simulate poll_process discovering a dead FFmpeg
+    rec._process = None
+    rec._last_known_returncode = 1
+    saved = rec.finalize_after_unexpected_exit(1)
+    assert saved == out
+    loaded = read_sidecar(sidecar)
+    assert loaded["ffmpeg_returncode"] == 1
+    assert "wall_clock_stop_unix" in loaded
+    assert loaded["duration_wall_seconds"] >= 0
+    assert rec.get_current_file() is None
 
 
 @patch("src.timing_sidecar.subprocess.run")

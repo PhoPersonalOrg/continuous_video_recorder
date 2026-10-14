@@ -10,6 +10,7 @@ Features:
 - Timestamp-based file naming (CAM_YYYY-MM-DDTHHMMSS.mkv)
 - LSL start/stop markers with timing metadata
 - Graceful shutdown with Ctrl+C
+- Periodic heartbeats and stall detection (fails loudly if output stops growing)
 
 Web Viewer Integration (Optional):
 To view the camera stream in a browser while recording, start the web stream server
@@ -22,6 +23,7 @@ Usage:
 Press Ctrl+C to stop recording gracefully.
 """
 
+import logging
 import os
 import signal
 import sys
@@ -36,6 +38,12 @@ from src.timing_sidecar import read_sidecar, sidecar_path_for
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config_webcam_debut.yaml"
 config = ConfigLoader.load_config(_CONFIG_PATH)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+HEARTBEAT_INTERVAL_S = 60.0
+STALL_TIMEOUT_S = 90.0
 
 recorder: Optional[DirectShowAVRecorder] = None
 lsl_trigger: Optional[LSLTrigger] = None
@@ -92,29 +100,88 @@ def _send_stop_marker(output_file: Path, reason: str, rec: Optional[DirectShowAV
     lsl_trigger.send_stop_marker(metadata)
 
 
+def _log_stderr_tail(rec: DirectShowAVRecorder, prefix: str = "FFmpeg stderr tail") -> None:
+    tail = rec.get_stderr_tail(40)
+    if tail:
+        logger.error("%s:\n%s", prefix, tail)
+        print(f"\n{prefix}:\n{tail}\n", file=sys.stderr)
+    else:
+        logger.error("%s: (empty)", prefix)
+
+
 def _stop_current_segment(reason: str) -> Optional[Path]:
     global recording_active
-    if recorder is None or not recorder.is_recording():
+    if recorder is None:
+        return None
+    if not recorder.is_recording() and recorder.get_current_file() is None:
         return None
     current = recorder.get_current_file()
     saved = recorder.stop_recording()
     recording_active = False
     if saved and current:
         _send_stop_marker(saved, reason, recorder)
+        timing = _timing_for_file(saved, recorder)
+        logger.info(
+            "Recording stopped and saved: %s duration_wall=%s ffmpeg_rc=%s",
+            saved,
+            timing.get("duration_wall_seconds"),
+            timing.get("ffmpeg_returncode"),
+        )
         print(f"Recording stopped and saved: {saved}")
+        print(
+            f"  duration_wall={timing.get('duration_wall_seconds')!r} "
+            f"ffmpeg_returncode={timing.get('ffmpeg_returncode')!r}"
+        )
         sidecar = saved.with_suffix(saved.suffix + ".timing.json")
         if sidecar.exists():
             print(f"Timing sidecar: {sidecar}")
+    elif current is not None:
+        logger.error("Stop requested but file was not kept (too short or finalize failed): %s", current)
     return saved
+
+
+def _fail_recording(message: str, exit_code: int = 1, finalize_rc: Optional[int] = None) -> None:
+    """Finalize if possible, print diagnostics, and exit non-zero."""
+    global recording_active
+    logger.error(message)
+    print(f"ERROR: {message}", file=sys.stderr)
+    if recorder is not None:
+        _log_stderr_tail(recorder)
+        if recorder.get_current_file() is not None:
+            if finalize_rc is not None or not recorder.is_recording():
+                saved = recorder.finalize_after_unexpected_exit(
+                    finalize_rc if finalize_rc is not None else recorder.get_last_returncode()
+                )
+            else:
+                saved = recorder.stop_recording()
+            if saved is not None:
+                _send_stop_marker(saved, "error", recorder)
+                print(f"Finalized segment after failure: {saved}", file=sys.stderr)
+        recording_active = False
+    if lsl_trigger is not None:
+        try:
+            lsl_trigger.close()
+        except Exception:
+            pass
+    sys.exit(exit_code)
 
 
 def signal_handler(sig, frame):
     global _shutdown_requested
     print("\n\nShutting down gracefully...")
+    logger.info("SIGINT received; shutting down")
     _shutdown_requested = True
-    _stop_current_segment("shutdown")
+    saved = _stop_current_segment("shutdown")
     if lsl_trigger is not None:
         lsl_trigger.close()
+    if saved is not None:
+        timing = _timing_for_file(saved, recorder)
+        logger.info(
+            "Shutdown complete: %s duration_wall=%s ffmpeg_rc=%s",
+            saved,
+            timing.get("duration_wall_seconds"),
+            timing.get("ffmpeg_returncode"),
+        )
     print("Shutdown complete")
     sys.exit(0)
 
@@ -126,9 +193,11 @@ def main():
     global recorder, lsl_trigger, recording_active, _shutdown_requested
 
     output_dir = config["storage"]["output_dir"]
+    auto_split = float(config.get("storage", {}).get("auto_split_duration", 3600))
     try:
         os.makedirs(output_dir, exist_ok=True)
         print(f"Output directory ready: {output_dir}")
+        logger.info("Output directory ready: %s", output_dir)
     except Exception as e:
         print(f"ERROR: Failed to create output directory: {e}")
         sys.exit(1)
@@ -142,41 +211,105 @@ def main():
     try:
         recorder = DirectShowAVRecorder(config)
         lsl_trigger = LSLTrigger(config, camera_id=0)
-        print(f"  {recorder.get_audio_status_line()}")
+        status = recorder.get_audio_status_line()
+        print(f"  {status}")
+        logger.info("%s", status)
+        logger.info("auto_split_duration=%.1fs", auto_split)
         output_file = recorder.start_recording()
         if output_file is None:
             print("ERROR: Failed to start recording.")
             sys.exit(1)
+        cmd = recorder.get_ffmpeg_command()
+        logger.info("FFmpeg command: %s", " ".join(cmd))
+        print(f"  FFmpeg: {' '.join(cmd)}")
         _send_start_marker(recorder, output_file)
         recording_active = True
         print(f"Recording started: {output_file}")
+        logger.info("Recording started: %s (absolute=%s)", output_file.name, output_file.resolve())
         if recorder.get_current_sidecar():
             print(f"Timing sidecar: {recorder.get_current_sidecar()}")
     except Exception as e:
         print(f"ERROR: Failed to start recording: {e}")
+        logger.exception("Failed to start recording")
         sys.exit(1)
 
     print("Recording in progress... Press Ctrl+C to stop\n")
+    logger.info(
+        "Recording loop started (heartbeat every %.0fs, stall timeout %.0fs)",
+        HEARTBEAT_INTERVAL_S,
+        STALL_TIMEOUT_S,
+    )
     poll_interval = 0.5
+    last_heartbeat = time.monotonic()
+    last_size: Optional[int] = None
+    last_size_change = time.monotonic()
+    seen_growth = False
 
     while not _shutdown_requested:
+        now = time.monotonic()
+        size = recorder.get_output_size_bytes()
+        if size is not None:
+            if last_size is None or size > last_size:
+                if last_size is not None and size > last_size:
+                    seen_growth = True
+                last_size = size
+                last_size_change = now
+            elif seen_growth and (now - last_size_change) >= STALL_TIMEOUT_S:
+                _fail_recording(
+                    f"Output file size stalled at {size} bytes for {STALL_TIMEOUT_S:.0f}s "
+                    f"(file={recorder.get_current_file()})",
+                    finalize_rc=None,
+                )
+
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL_S:
+            elapsed = recorder.get_duration()
+            remaining = max(0.0, auto_split - elapsed)
+            size_str = f"{size} bytes" if size is not None else "unknown"
+            msg = (
+                f"Heartbeat: segment={recorder.get_segment_index()} "
+                f"elapsed={elapsed:.1f}s size={size_str} "
+                f"next_split_in={remaining:.1f}s file={recorder.get_current_file()}"
+            )
+            logger.info(msg)
+            print(msg)
+            last_heartbeat = now
+
         if recorder.should_split():
-            print("\n1-hour duration reached, splitting to new file...")
+            split_msg = (
+                f"Auto-split duration reached ({auto_split:.0f}s), splitting to new file..."
+            )
+            print(f"\n{split_msg}")
+            logger.info(split_msg)
             old_file = recorder.get_current_file()
+            old_duration = recorder.get_duration()
             new_file = recorder.split_recording()
             if old_file and new_file:
                 _send_stop_marker(old_file, "auto_split", recorder)
                 _send_start_marker(recorder, new_file)
                 print(f"Recording continues in new file: {new_file}\n")
+                logger.info(
+                    "Split OK: closed %s after %.1fs; now writing %s",
+                    old_file.name,
+                    old_duration,
+                    new_file.name,
+                )
+                last_size = recorder.get_output_size_bytes()
+                last_size_change = time.monotonic()
+                seen_growth = False
+                last_heartbeat = time.monotonic()
             else:
-                print("WARNING: Failed to split recording\n")
-                break
+                _fail_recording(
+                    f"Failed to split recording (old={old_file}, new={new_file})",
+                    finalize_rc=None,
+                )
+
         rc = recorder.poll_process()
         if rc is not None:
-            print(f"ERROR: FFmpeg exited unexpectedly (code {rc})")
             recording_active = False
-            break
+            _fail_recording(f"FFmpeg exited unexpectedly (code {rc})", finalize_rc=rc)
+
         time.sleep(poll_interval)
+    ## END while not _shutdown_requested
 
 
 if __name__ == "__main__":
@@ -186,4 +319,5 @@ if __name__ == "__main__":
         pass
     except Exception as e:
         print(f"\nERROR: Unexpected error occurred: {e}")
+        logger.exception("Unexpected error")
         sys.exit(1)
