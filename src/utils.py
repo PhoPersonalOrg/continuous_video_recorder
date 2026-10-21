@@ -117,8 +117,20 @@ def generate_timestamped_filename(prefix: str = "Record", extension: str = "mp4"
     
     if output_dir:
         output_dir = ensure_directory(Path(output_dir))
-        return output_dir / filename
-    return Path(filename)
+        full_path = output_dir / filename
+    else:
+        full_path = Path(filename)
+
+    if full_path.exists():
+        stem = full_path.stem
+        ext = full_path.suffix
+        counter = 1
+        parent = full_path.parent
+        while (parent / f"{stem}_{counter}{ext}").exists():
+            counter += 1
+        full_path = parent / f"{stem}_{counter}{ext}"
+
+    return full_path
 
 
 def format_duration(seconds: float) -> str:

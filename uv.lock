@@ -537,7 +537,7 @@ dependencies = [
     { name = "textual" },
     { name = "textual-dev" },
     { name = "vidgear" },
-    { name = "wmi" },
+    { name = "wmi", marker = "sys_platform == 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -559,7 +559,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "opencv-python", specifier = ">=4.8.0" },
     { name = "pandas", specifier = ">=2.3.3" },
-    { name = "phopylslhelper", editable = "../PhoPyLSLhelper" },
+    { name = "phopylslhelper", git = "https://github.com/PhoPersonalOrg/phopylslhelper.git" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "pyaudio", specifier = ">=0.2.14" },
     { name = "pylsl", specifier = ">=1.16.0" },
@@ -570,7 +570,7 @@ requires-dist = [
     { name = "textual", specifier = ">=8.2.4" },
     { name = "textual-dev", specifier = ">=1.8.0" },
     { name = "vidgear", specifier = ">=0.3.3,<0.3.4" },
-    { name = "wmi", specifier = ">=1.5.1" },
+    { name = "wmi", marker = "sys_platform == 'win32'", specifier = ">=1.5.1" },
     { name = "wmi", marker = "extra == 'windows'", specifier = ">=1.5.1" },
 ]
 provides-extras = ["windows"]
@@ -2038,27 +2038,14 @@ wheels = [
 
 [[package]]
 name = "phopylslhelper"
-version = "1.1.0"
-source = { editable = "../PhoPyLSLhelper" }
+version = "1.0.7"
+source = { git = "https://github.com/PhoPersonalOrg/phopylslhelper.git#bfa455f28c1ff413bdb1c2a6e43368a7a363dbca" }
 dependencies = [
     { name = "attrs" },
     { name = "pandas" },
     { name = "pylsl" },
     { name = "pytz" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "attrs", specifier = ">=22.2.0,<23" },
-    { name = "opencv-python", marker = "extra == 'video'", specifier = ">=4.5.0" },
-    { name = "pandas", specifier = ">=1.5.3,<3.0.0" },
-    { name = "pylsl", specifier = ">=1.16.2" },
-    { name = "pytz", specifier = ">=2025.2" },
-]
-provides-extras = ["video"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.3.5" }]
 
 [[package]]
 name = "pillow"

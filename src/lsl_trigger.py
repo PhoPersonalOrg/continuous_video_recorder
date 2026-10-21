@@ -17,7 +17,7 @@ try:
     from pylsl import StreamInfo, StreamOutlet
     from phopylslhelper.easy_time_sync import EasyTimeSyncParsingMixin
     lsl_available = True
-except ImportError:
+except (ImportError, RuntimeError, Exception):
     lsl_available = False
     logger.warning("pylsl not available. LSL triggers will be disabled.")
 
