@@ -85,6 +85,7 @@ def test_resolve_dshow_devices_from_config(mock_list):
     assert audio == "Microphone (HD Pro Webcam C920)"
 
 
+@patch("src.dshow_recorder.sys.platform", "win32")
 @patch("src.dshow_recorder.resolve_dshow_devices_from_config")
 def test_build_ffmpeg_command_single_dshow_input(mock_resolve):
     mock_resolve.return_value = ("HD Pro Webcam C920", "Microphone (HD Pro Webcam C920)")
@@ -145,6 +146,7 @@ def _mock_ffmpeg_proc(stderr_text: str = "") -> MagicMock:
     return proc
 
 
+@patch("src.dshow_recorder.sys.platform", "win32")
 @patch("src.dshow_recorder.probe_media_timing", return_value={})
 @patch("src.dshow_recorder.generate_timestamped_filename")
 @patch("src.dshow_recorder.subprocess.Popen")
@@ -170,6 +172,7 @@ def test_split_recording_increments_segment(mock_resolve, mock_popen, mock_filen
     assert rec.get_timing_metadata()["segment_index"] == 1
 
 
+@patch("src.dshow_recorder.sys.platform", "win32")
 @patch("src.dshow_recorder.probe_media_timing", return_value={"ffprobe_duration": "1.0"})
 @patch("src.dshow_recorder.generate_timestamped_filename")
 @patch("src.dshow_recorder.subprocess.Popen")
@@ -198,6 +201,7 @@ def test_stderr_drain_captures_tail(mock_resolve, mock_popen, mock_filename, moc
     assert saved == out
 
 
+@patch("src.dshow_recorder.sys.platform", "win32")
 @patch("src.dshow_recorder.probe_media_timing", return_value={"ffprobe_duration": "12.0"})
 @patch("src.dshow_recorder.generate_timestamped_filename")
 @patch("src.dshow_recorder.subprocess.Popen")

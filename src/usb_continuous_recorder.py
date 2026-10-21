@@ -197,6 +197,10 @@ class UsbContinuousRecorder:
             metadata = {"filename": new_file.name, "session_id": new_file.stem, "timestamp": time.time(), "reason": "auto_split"}
             self.lsl_trigger.send_start_marker(metadata)
             logger.info("Auto-split at %.1fs — new file: %s", old_duration, new_file.absolute())
+        elif old_file and not self.video_recorder.is_recording():
+            metadata = {"filename": old_file.name, "session_id": old_file.stem, "duration": old_duration, "timestamp": time.time(), "reason": "auto_split_failed"}
+            self.lsl_trigger.send_stop_marker(metadata)
+            logger.error("Auto-split failed to start new recording session for camera %s", camera_id)
 
 
     def _wait_usb_reconnect(self, camera_id: int) -> bool:
@@ -248,7 +252,10 @@ class UsbContinuousRecorder:
                     self.preview.update(frame)
                 if self.video_recorder.is_recording():
                     self._handle_auto_split(camera_id)
-                    self.video_recorder.write_frame(frame)
+                    if self.video_recorder.is_recording():
+                        wrote_ok = self.video_recorder.write_frame(frame)
+                        if not wrote_ok and not self.video_recorder.is_recording():
+                            logger.error("VideoRecorder writer died during write_frame for camera %s", camera_id)
                 elapsed = time.time() - loop_start
                 time.sleep(max(0, frame_time - elapsed))
         finally:

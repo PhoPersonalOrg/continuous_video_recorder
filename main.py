@@ -13,6 +13,8 @@ from src.config_loader import ConfigLoader
 from src.detector import PresenceDetector
 from src.recorder import VideoRecorder
 from src.lsl_trigger import LSLTrigger
+from src.camera_manager import CameraManager
+from src.web_stream_server import WebStreamServer
 from src.utils import setup_logging, setup_signal_handlers
 from src.terminal_hotkey import start_manual_split_hotkey_thread
 
@@ -45,6 +47,8 @@ class ContinuousVideoRecorder:
         self.recorder = VideoRecorder(self.config)  # Primary recorder for single camera mode
         self.recorders: Dict[int, VideoRecorder] = {}  # Multiple recorders for multi-camera mode
         self.lsl_trigger = LSLTrigger(self.config, camera_id=0)
+        self.camera_manager: Optional[CameraManager] = None
+        self.web_server: Optional[WebStreamServer] = None
         
         # State management
         self.state = RecordingState.IDLE
@@ -89,7 +93,38 @@ class ContinuousVideoRecorder:
                 "name": "Camera_0",
                 "output_dir": self.config.get("storage", {}).get("output_dir", "./recordings"),
             })
-    
+
+    def initialize_cameras(self) -> bool:
+        """Initialize CameraManager and optional WebStreamServer."""
+        try:
+            self.camera_manager = CameraManager(self.config)
+            success = self.camera_manager.initialize_cameras()
+            if not success:
+                self.logger.error("CameraManager failed to initialize cameras")
+                return False
+
+            # Web UI initialization if enabled
+            web_config = self.config.get("web_ui", {})
+            if web_config.get("enabled", False):
+                try:
+                    port = web_config.get("port", 5000)
+                    host = web_config.get("host", "0.0.0.0")
+                    camera_ids = list(self.camera_manager.cameras.keys()) if self.camera_manager.cameras else [0]
+                    self.web_server = WebStreamServer(camera_ids, self.config)
+                    if self.web_server.start_server(port, host):
+                        self.logger.info("WebStreamServer started successfully")
+                    else:
+                        self.logger.warning("Failed to start WebStreamServer")
+                        self.web_server = None
+                except Exception as e:
+                    self.logger.error("Error starting WebStreamServer: %s", e)
+                    self.web_server = None
+
+            return True
+        except Exception as e:
+            self.logger.error("Failed in initialize_cameras: %s", e)
+            return False
+
     def initialize_webcam(self, camera_index: int = 0) -> bool:
         """Initialize webcam capture using VidGear CamGear.
         
@@ -161,6 +196,13 @@ class ContinuousVideoRecorder:
         """Handle graceful shutdown."""
         self.logger.info("Shutting down...")
         self.shutdown_requested = True
+
+        if self.web_server:
+            try:
+                self.web_server.stop_server()
+                self.logger.info("Web stream server stopped")
+            except Exception as e:
+                self.logger.warning(f"Error stopping web server: {e}")
         
         # Stop any active recording (single camera mode)
         if self.state == RecordingState.RECORDING or self.state == RecordingState.BUFFERING:
@@ -183,6 +225,13 @@ class ContinuousVideoRecorder:
             except Exception as e:
                 self.logger.warning(f"Error stopping camera stream {camera_index}: {e}")
         self.camera_streams.clear()
+
+        if self.camera_manager:
+            try:
+                self.camera_manager.shutdown()
+            except Exception as e:
+                self.logger.warning(f"Error shutting down camera manager: {e}")
+            self.camera_manager = None
         
         self.lsl_trigger.close()
         self.logger.info("Shutdown complete")
@@ -244,6 +293,8 @@ class ContinuousVideoRecorder:
         stream = self.camera_streams[camera_index]
         
         frame_time = 1.0 / self.config["video"]["fps"]
+        consecutive_read_failures = 0
+        max_read_failures = 30
         
         try:
             while not self.shutdown_requested:
@@ -252,12 +303,25 @@ class ContinuousVideoRecorder:
                 # Read frame using VidGear
                 frame = stream.read()
                 if frame is None:
-                    self.logger.warning(f"Failed to read frame from {cam_config['name']}")
+                    consecutive_read_failures += 1
+                    self.logger.warning(f"Failed to read frame from {cam_config['name']} ({consecutive_read_failures}/{max_read_failures})")
+                    if consecutive_read_failures >= max_read_failures and cam_data["state"] != RecordingState.IDLE:
+                        self.logger.error(f"Camera {cam_config['name']} lost; stopping active recording")
+                        recorder.stop_recording()
+                        cam_data["state"] = RecordingState.IDLE
+                        cam_data["buffer_start_time"] = None
                     time.sleep(0.1)
                     continue
                 
+                consecutive_read_failures = 0
                 current_time = time.time()
                 
+                if self.web_server:
+                    try:
+                        self.web_server.update_frame(camera_index, frame)
+                    except Exception as e:
+                        self.logger.debug(f"Web server frame update error for camera {camera_index}: {e}")
+
                 # Detect presence
                 presence_detected = detector.detect_presence(frame, current_time)
                 
@@ -297,6 +361,10 @@ class ContinuousVideoRecorder:
                         new_file = recorder.split_recording()
                         if new_file and old_file:
                             self.logger.info(f"{cam_config['name']}: Auto-split at {old_duration:.1f}s - New file: {new_file.name}")
+                        elif not recorder.is_recording():
+                            self.logger.error(f"{cam_config['name']}: Split failed; resetting state to IDLE")
+                            cam_data["state"] = RecordingState.IDLE
+                            cam_data["buffer_start_time"] = None
                     if self.manual_split_seq > cam_data["manual_split_ack_seq"]:
                         if recorder.is_recording():
                             old_file = recorder.get_current_file()
@@ -304,9 +372,18 @@ class ContinuousVideoRecorder:
                             new_file = recorder.split_recording()
                             if new_file and old_file:
                                 self.logger.info(f"{cam_config['name']}: Manual split at {old_duration:.1f}s - New file: {new_file.name}")
+                            elif not recorder.is_recording():
+                                self.logger.error(f"{cam_config['name']}: Manual split failed; resetting state to IDLE")
+                                cam_data["state"] = RecordingState.IDLE
+                                cam_data["buffer_start_time"] = None
                         cam_data["manual_split_ack_seq"] = self.manual_split_seq
                     
-                    recorder.write_frame(frame)
+                    if recorder.is_recording():
+                        wrote_ok = recorder.write_frame(frame)
+                        if not wrote_ok and not recorder.is_recording():
+                            self.logger.error(f"{cam_config['name']}: Writer died during write_frame; resetting state to IDLE")
+                            cam_data["state"] = RecordingState.IDLE
+                            cam_data["buffer_start_time"] = None
                 
                 # Maintain frame rate
                 elapsed = time.time() - loop_start
@@ -435,6 +512,8 @@ class ContinuousVideoRecorder:
         last_face_check_time = time.time()
         frame_time = 1.0 / self.config["video"]["fps"]
         stream = self.camera_streams[0]
+        consecutive_read_failures = 0
+        max_read_failures = 30
         
         try:
             while not self.shutdown_requested:
@@ -443,12 +522,23 @@ class ContinuousVideoRecorder:
                 # Read frame using VidGear
                 frame = stream.read()
                 if frame is None:
-                    self.logger.warning("Failed to read frame from webcam")
+                    consecutive_read_failures += 1
+                    self.logger.warning(f"Failed to read frame from webcam ({consecutive_read_failures}/{max_read_failures})")
+                    if consecutive_read_failures >= max_read_failures and self.state != RecordingState.IDLE:
+                        self.logger.error("Primary webcam lost; stopping active recording")
+                        self._stop_recording()
                     time.sleep(0.1)
                     continue
                 
+                consecutive_read_failures = 0
                 current_time = time.time()
                 
+                if self.web_server:
+                    try:
+                        self.web_server.update_frame(0, frame)
+                    except Exception as e:
+                        self.logger.debug(f"Web server frame update error: {e}")
+
                 # Detect presence
                 presence_detected = self.detector.detect_presence(frame, current_time)
                 
@@ -476,10 +566,19 @@ class ContinuousVideoRecorder:
                 if self.state == RecordingState.RECORDING or self.state == RecordingState.BUFFERING:
                     # Check for auto-split (every hour)
                     if self.recorder.should_split():
-                        self._split_primary_with_lsl("auto_split")
+                        split_ok = self._split_primary_with_lsl("auto_split")
+                        if not split_ok and not self.recorder.is_recording():
+                            self.logger.error("Auto-split failed; resetting state to IDLE")
+                            self.state = RecordingState.IDLE
+                            self.buffer_start_time = None
                     
                     # Write frame to current recording
-                    self.recorder.write_frame(frame)
+                    if self.recorder.is_recording():
+                        wrote_ok = self.recorder.write_frame(frame)
+                        if not wrote_ok and not self.recorder.is_recording():
+                            self.logger.error("Primary writer died during write_frame; resetting state to IDLE")
+                            self.state = RecordingState.IDLE
+                            self.buffer_start_time = None
                 
                 # Maintain frame rate
                 elapsed = time.time() - loop_start

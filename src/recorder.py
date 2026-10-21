@@ -51,6 +51,8 @@ class VideoRecorder:
         self.start_time: Optional[float] = None
         self.frame_count = 0
         self._audio_effective = False
+        self.consecutive_write_failures = 0
+        self.max_write_failures = 5
 
         # Ensure output directory exists
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -135,7 +137,7 @@ class VideoRecorder:
             logger.info(self.get_audio_status_line())
 
 
-    def _build_ffmpeg_output_params(self) -> Dict[str, Any]:
+    def _build_ffmpeg_output_params(self, force_audio_disabled: bool = False) -> Dict[str, Any]:
         """Build FFMPEG output_params for WriteGear compression mode from video config."""
         quality = self.video_config.get("quality", "medium")
         quality_map = {"low": (28, "fast"), "medium": (23, "medium"), "high": (18, "slow")}
@@ -143,7 +145,7 @@ class VideoRecorder:
         codec_to_ffmpeg = {"H264": "libx264", "avc1": "libx264", "h264": "libx264"}
         vcodec = codec_to_ffmpeg.get(self.codec, "libx264")
 
-        audio_active = self._resolve_audio_recording()
+        audio_active = False if force_audio_disabled else self._resolve_audio_recording()
         self._audio_effective = audio_active
 
         params: Dict[str, Any] = {"-input_framerate": self.fps}
@@ -170,6 +172,14 @@ class VideoRecorder:
                 try:
                     return WriteGear(output=str(file_path), compression_mode=True, logging=True, **output_params)
                 except Exception as e2:
+                    if self._audio_effective:
+                        logger.warning(f"Failed to initialize FFMPEG video writer with audio: {e2}. Attempting video-only fallback.")
+                        video_only_params = self._build_ffmpeg_output_params(force_audio_disabled=True)
+                        try:
+                            return WriteGear(output=str(file_path), compression_mode=True, logging=True, **video_only_params)
+                        except Exception as e3:
+                            logger.error(f"Failed to initialize FFMPEG video writer on video-only fallback: {e3}")
+                            return None
                     logger.error(f"Failed to initialize FFMPEG video writer: {e2}")
                     return None
         if self.audio_enabled and self.compression_mode is False:
@@ -217,6 +227,7 @@ class VideoRecorder:
                 return None
             self.start_time = time.time()
             self.frame_count = 0
+            self.consecutive_write_failures = 0
             self._log_audio_status()
             logger.info(f"Started recording: {self.current_file.name}")
             return self.current_file
@@ -246,9 +257,14 @@ class VideoRecorder:
 
             self.writer.write(frame)
             self.frame_count += 1
+            self.consecutive_write_failures = 0
             return True
         except Exception as e:
-            logger.error(f"Failed to write frame: {e}")
+            self.consecutive_write_failures += 1
+            logger.error(f"Failed to write frame ({self.consecutive_write_failures}/{self.max_write_failures}): {e}")
+            if self.consecutive_write_failures >= self.max_write_failures:
+                logger.error("Max consecutive frame write failures reached. Stopping writer session.")
+                self.stop_recording()
             return False
 
 
@@ -277,11 +293,13 @@ class VideoRecorder:
                 file_path = None
             else:
                 file_path = self.current_file
-                logger.info(f"Stopped recording: {self.current_file.name} (duration: {duration:.1f}s)")
+                filename_str = self.current_file.name if self.current_file else "unknown"
+                logger.info(f"Stopped recording: {filename_str} (duration: {duration:.1f}s)")
 
             self.current_file = None
             self.start_time = None
             self.frame_count = 0
+            self.consecutive_write_failures = 0
             self._audio_effective = False
 
             return file_path
@@ -368,9 +386,14 @@ class VideoRecorder:
             self.writer = self._create_writer(self.current_file)
             if self.writer is None:
                 self.current_file = None
+                self.start_time = None
+                self.frame_count = 0
+                self.consecutive_write_failures = 0
+                self._audio_effective = False
                 return None
             self.start_time = time.time()
             self.frame_count = 0
+            self.consecutive_write_failures = 0
             self._log_audio_status()
             logger.info(f"Auto-split: Started new recording: {self.current_file.name}")
             return self.current_file
@@ -379,4 +402,8 @@ class VideoRecorder:
             logger.error(f"Failed to split recording: {e}")
             self.writer = None
             self.current_file = None
+            self.start_time = None
+            self.frame_count = 0
+            self.consecutive_write_failures = 0
+            self._audio_effective = False
             return None
