@@ -13,7 +13,7 @@ from src.config_loader import ConfigLoader
 from src.detector import PresenceDetector
 from src.recorder import VideoRecorder
 from src.lsl_trigger import LSLTrigger
-from src.utils import setup_logging, setup_signal_handlers
+from src.utils import setup_logging, setup_signal_handlers, prompt_for_usable_directory
 from src.terminal_hotkey import start_manual_split_hotkey_thread
 
 
@@ -36,8 +36,11 @@ class ContinuousVideoRecorder:
         # Load configuration
         self.config = ConfigLoader.load_config(config_path)
         
+        storage = self.config.setdefault("storage", {})
+        log_dir = prompt_for_usable_directory(Path(storage.get("output_dir", "./recordings")))
+        storage["output_dir"] = str(log_dir)
+        
         # Setup logging
-        log_dir = Path(self.config.get("storage", {}).get("output_dir", "./recordings"))
         self.logger = setup_logging(log_dir=log_dir / "logs")
         
         # Initialize components
@@ -76,10 +79,12 @@ class ContinuousVideoRecorder:
         if "cameras" in webcam_config and isinstance(webcam_config["cameras"], list):
             # Multiple cameras configuration
             for cam_config in webcam_config["cameras"]:
+                name = cam_config.get("name", f"Camera_{cam_config.get('device_index', 0)}")
+                output_dir = cam_config.get("output_dir", self.config.get("storage", {}).get("output_dir", "./recordings"))
                 self.cameras.append({
                     "device_index": cam_config.get("device_index", 0),
-                    "name": cam_config.get("name", f"Camera_{cam_config.get('device_index', 0)}"),
-                    "output_dir": cam_config.get("output_dir", self.config.get("storage", {}).get("output_dir", "./recordings")),
+                    "name": name,
+                    "output_dir": str(prompt_for_usable_directory(Path(output_dir), label=f"Recording directory for {name}")),
                 })
         else:
             # Single camera configuration (backward compatible)

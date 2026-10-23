@@ -11,7 +11,7 @@ Features:
 - LSL start/stop markers with timing metadata
 - Graceful shutdown with Ctrl+C
 - Stall detection (fails loudly if output stops growing)
-- Press 's' in the console to split to a new file immediately; Ctrl+C to stop
+- Press 's' in the console to split to a new file immediately; 'o' to reveal the active file; Ctrl+C to stop
 
 Web Viewer Integration (Optional):
 To view the camera stream in a browser while recording, start the web stream server
@@ -21,16 +21,17 @@ in a separate terminal (do not open the same camera in both processes):
 Usage:
     python examples/debut_example.py
 
-Press 's' to start a new file; Ctrl+C to stop recording gracefully.
+Press 's' to start a new file; 'o' to reveal the active recording; Ctrl+C to stop recording gracefully.
 """
 
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from src.config_loader import ConfigLoader
 from src.dshow_recorder import DirectShowAVRecorder
@@ -175,20 +176,47 @@ def _perform_split(reason: str, *, auto_split_duration: Optional[float] = None) 
     return False
 
 
-def _poll_manual_split_key() -> bool:
-    """Drain pending console keys; return True if 's' was pressed."""
+def _poll_console_keys() -> Set[str]:
+    """Drain pending console keys; return the set of lowercased keys pressed."""
     if msvcrt is None:
-        return False
-    pressed = False
+        return set()
+    pressed: Set[str] = set()
     while msvcrt.kbhit():
         key = msvcrt.getwch()
         if key in ("\x00", "\xe0"):
             if msvcrt.kbhit():
                 msvcrt.getwch()
             continue
-        if key.lower() == "s":
-            pressed = True
+        if key:
+            pressed.add(key.lower())
     return pressed
+
+
+def _reveal_in_file_manager(target: Optional[Path], fallback_dir: Path) -> None:
+    """Open the system file manager, selecting `target` when it exists."""
+    select_path: Optional[Path] = None
+    if target is not None and target.exists():
+        select_path = target.resolve()
+    open_dir = select_path.parent if select_path is not None else fallback_dir.resolve()
+    revealed = select_path if select_path is not None else open_dir
+    try:
+        if sys.platform == "win32":
+            if select_path is not None:
+                subprocess.Popen(f'explorer /select,"{select_path}"')
+            else:
+                subprocess.Popen(f'explorer "{open_dir}"')
+        elif sys.platform == "darwin":
+            if select_path is not None:
+                subprocess.Popen(["open", "-R", str(select_path)])
+            else:
+                subprocess.Popen(["open", str(open_dir)])
+        else:
+            subprocess.Popen(["xdg-open", str(open_dir)])
+        print(f"Revealing in file manager: {revealed}")
+        logger.info("Revealing in file manager: %s", revealed)
+    except Exception as e:
+        logger.warning("Failed to reveal in file manager: %s", e)
+        print(f"Failed to reveal in file manager: {e}")
 
 
 def _fail_recording(message: str, exit_code: int = 1, finalize_rc: Optional[int] = None) -> None:
@@ -284,7 +312,7 @@ def main():
         logger.exception("Failed to start recording")
         sys.exit(1)
 
-    print("Recording in progress... Press 's' to start a new file; Ctrl+C to stop\n")
+    print("Recording in progress... Press 's' to start a new file; 'o' to reveal the active file; Ctrl+C to stop\n")
     logger.info("Recording loop started (stall timeout %.0fs)", STALL_TIMEOUT_S)
     poll_interval = 0.5
     last_heartbeat = time.monotonic()
@@ -292,8 +320,10 @@ def main():
     last_size_change = time.monotonic()
     seen_growth = False
     manual_split_enabled = bool(config.get("hotkeys", {}).get("manual_split_enabled", True))
-    if manual_split_enabled and msvcrt is not None:
-        logger.info("Manual split: press 's' in this console to start a new recording file.")
+    if msvcrt is not None:
+        logger.info("Press 'o' in this console to reveal the current recording in the file manager.")
+        if manual_split_enabled:
+            logger.info("Manual split: press 's' in this console to start a new recording file.")
 
     def _reset_stall_tracking() -> None:
         nonlocal last_size, last_size_change, seen_growth, last_heartbeat
@@ -340,7 +370,10 @@ def main():
             )
             last_heartbeat = now
 
-        if manual_split_enabled and _poll_manual_split_key() and recorder.is_recording():
+        keys = _poll_console_keys()
+        if "o" in keys:
+            _reveal_in_file_manager(recorder.get_current_file(), Path(output_dir))
+        if manual_split_enabled and "s" in keys and recorder.is_recording():
             _split_or_fail("manual_split")
 
         if recorder.should_split():
