@@ -11,6 +11,7 @@ Features:
 - LSL start/stop markers with timing metadata
 - Graceful shutdown with Ctrl+C
 - Stall detection (fails loudly if output stops growing)
+- Press 's' in the console to split to a new file immediately; Ctrl+C to stop
 
 Web Viewer Integration (Optional):
 To view the camera stream in a browser while recording, start the web stream server
@@ -20,7 +21,7 @@ in a separate terminal (do not open the same camera in both processes):
 Usage:
     python examples/debut_example.py
 
-Press Ctrl+C to stop recording gracefully.
+Press 's' to start a new file; Ctrl+C to stop recording gracefully.
 """
 
 import logging
@@ -35,6 +36,11 @@ from src.config_loader import ConfigLoader
 from src.dshow_recorder import DirectShowAVRecorder
 from src.lsl_trigger import LSLTrigger
 from src.timing_sidecar import read_sidecar, sidecar_path_for
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config_webcam_debut.yaml"
 config = ConfigLoader.load_config(_CONFIG_PATH)
@@ -140,6 +146,51 @@ def _stop_current_segment(reason: str) -> Optional[Path]:
     return saved
 
 
+def _perform_split(reason: str, *, auto_split_duration: Optional[float] = None) -> bool:
+    """Close the current segment and immediately start a new one. Returns False if the split failed."""
+    if recorder is None:
+        return False
+    old_file = recorder.get_current_file()
+    old_duration = recorder.get_duration()
+    if reason == "manual_split":
+        split_msg = "Manual split ('s') — splitting to new file..."
+    elif auto_split_duration is not None:
+        split_msg = f"Auto-split duration reached ({auto_split_duration:.0f}s), splitting to new file..."
+    else:
+        split_msg = "Auto-split duration reached, splitting to new file..."
+    print(f"\n{split_msg}")
+    logger.info(split_msg)
+    new_file = recorder.split_recording()
+    if old_file and new_file:
+        _send_stop_marker(old_file, reason, recorder)
+        _send_start_marker(recorder, new_file)
+        print(f"Recording continues in new file: {new_file}\n")
+        logger.info(
+            "Split OK: closed %s after %.1fs; now writing %s",
+            old_file.name,
+            old_duration,
+            new_file.name,
+        )
+        return True
+    return False
+
+
+def _poll_manual_split_key() -> bool:
+    """Drain pending console keys; return True if 's' was pressed."""
+    if msvcrt is None:
+        return False
+    pressed = False
+    while msvcrt.kbhit():
+        key = msvcrt.getwch()
+        if key in ("\x00", "\xe0"):
+            if msvcrt.kbhit():
+                msvcrt.getwch()
+            continue
+        if key.lower() == "s":
+            pressed = True
+    return pressed
+
+
 def _fail_recording(message: str, exit_code: int = 1, finalize_rc: Optional[int] = None) -> None:
     """Finalize if possible, print diagnostics, and exit non-zero."""
     global recording_active
@@ -233,13 +284,31 @@ def main():
         logger.exception("Failed to start recording")
         sys.exit(1)
 
-    print("Recording in progress... Press Ctrl+C to stop\n")
+    print("Recording in progress... Press 's' to start a new file; Ctrl+C to stop\n")
     logger.info("Recording loop started (stall timeout %.0fs)", STALL_TIMEOUT_S)
     poll_interval = 0.5
     last_heartbeat = time.monotonic()
     last_size: Optional[int] = None
     last_size_change = time.monotonic()
     seen_growth = False
+    manual_split_enabled = bool(config.get("hotkeys", {}).get("manual_split_enabled", True))
+    if manual_split_enabled and msvcrt is not None:
+        logger.info("Manual split: press 's' in this console to start a new recording file.")
+
+    def _reset_stall_tracking() -> None:
+        nonlocal last_size, last_size_change, seen_growth, last_heartbeat
+        last_size = recorder.get_output_size_bytes()
+        last_size_change = time.monotonic()
+        seen_growth = False
+        last_heartbeat = time.monotonic()
+
+    def _split_or_fail(reason: str) -> None:
+        if not _perform_split(reason, auto_split_duration=auto_split):
+            _fail_recording(
+                f"Failed to split recording (old={recorder.get_current_file()}, reason={reason})",
+                finalize_rc=None,
+            )
+        _reset_stall_tracking()
 
     while not _shutdown_requested:
         now = time.monotonic()
@@ -271,34 +340,11 @@ def main():
             )
             last_heartbeat = now
 
+        if manual_split_enabled and _poll_manual_split_key() and recorder.is_recording():
+            _split_or_fail("manual_split")
+
         if recorder.should_split():
-            split_msg = (
-                f"Auto-split duration reached ({auto_split:.0f}s), splitting to new file..."
-            )
-            print(f"\n{split_msg}")
-            logger.info(split_msg)
-            old_file = recorder.get_current_file()
-            old_duration = recorder.get_duration()
-            new_file = recorder.split_recording()
-            if old_file and new_file:
-                _send_stop_marker(old_file, "auto_split", recorder)
-                _send_start_marker(recorder, new_file)
-                print(f"Recording continues in new file: {new_file}\n")
-                logger.info(
-                    "Split OK: closed %s after %.1fs; now writing %s",
-                    old_file.name,
-                    old_duration,
-                    new_file.name,
-                )
-                last_size = recorder.get_output_size_bytes()
-                last_size_change = time.monotonic()
-                seen_growth = False
-                last_heartbeat = time.monotonic()
-            else:
-                _fail_recording(
-                    f"Failed to split recording (old={old_file}, new={new_file})",
-                    finalize_rc=None,
-                )
+            _split_or_fail("auto_split")
 
         rc = recorder.poll_process()
         if rc is not None:
