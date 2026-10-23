@@ -10,7 +10,7 @@ Features:
 - Timestamp-based file naming (CAM_YYYY-MM-DDTHHMMSS.mkv)
 - LSL start/stop markers with timing metadata
 - Graceful shutdown with Ctrl+C
-- Periodic heartbeats and stall detection (fails loudly if output stops growing)
+- Stall detection (fails loudly if output stops growing)
 
 Web Viewer Integration (Optional):
 To view the camera stream in a browser while recording, start the web stream server
@@ -234,11 +234,7 @@ def main():
         sys.exit(1)
 
     print("Recording in progress... Press Ctrl+C to stop\n")
-    logger.info(
-        "Recording loop started (heartbeat every %.0fs, stall timeout %.0fs)",
-        HEARTBEAT_INTERVAL_S,
-        STALL_TIMEOUT_S,
-    )
+    logger.info("Recording loop started (stall timeout %.0fs)", STALL_TIMEOUT_S)
     poll_interval = 0.5
     last_heartbeat = time.monotonic()
     last_size: Optional[int] = None
@@ -265,13 +261,14 @@ def main():
             elapsed = recorder.get_duration()
             remaining = max(0.0, auto_split - elapsed)
             size_str = f"{size} bytes" if size is not None else "unknown"
-            msg = (
-                f"Heartbeat: segment={recorder.get_segment_index()} "
-                f"elapsed={elapsed:.1f}s size={size_str} "
-                f"next_split_in={remaining:.1f}s file={recorder.get_current_file()}"
+            logger.debug(
+                "Heartbeat: segment=%s elapsed=%.1fs size=%s next_split_in=%.1fs file=%s",
+                recorder.get_segment_index(),
+                elapsed,
+                size_str,
+                remaining,
+                recorder.get_current_file(),
             )
-            logger.info(msg)
-            print(msg)
             last_heartbeat = now
 
         if recorder.should_split():
