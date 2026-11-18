@@ -1,6 +1,7 @@
 """Helper functions for logging, file management, and signal handling."""
 import logging
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Callable
@@ -171,4 +172,32 @@ def format_duration(seconds: float) -> str:
     parts.append(f"{secs}s")
     
     return " ".join(parts)
+
+
+def reveal_in_file_manager(target: Optional[Path], fallback_dir: Path) -> None:
+    """Open the system file manager, selecting `target` when it exists."""
+    select_path: Optional[Path] = None
+    if target is not None and target.exists():
+        select_path = target.resolve()
+    open_dir = select_path.parent if select_path is not None else fallback_dir.resolve()
+    revealed = select_path if select_path is not None else open_dir
+    log = logging.getLogger("continuous_video_recorder")
+    try:
+        if sys.platform == "win32":
+            if select_path is not None:
+                subprocess.Popen(f'explorer /select,"{select_path}"')
+            else:
+                subprocess.Popen(f'explorer "{open_dir}"')
+        elif sys.platform == "darwin":
+            if select_path is not None:
+                subprocess.Popen(["open", "-R", str(select_path)])
+            else:
+                subprocess.Popen(["open", str(open_dir)])
+        else:
+            subprocess.Popen(["xdg-open", str(open_dir)])
+        print(f"Revealing in file manager: {revealed}")
+        log.info("Revealing in file manager: %s", revealed)
+    except Exception as e:
+        log.warning("Failed to reveal in file manager: %s", e)
+        print(f"Failed to reveal in file manager: {e}")
 

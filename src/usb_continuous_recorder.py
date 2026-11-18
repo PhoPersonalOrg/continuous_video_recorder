@@ -10,6 +10,8 @@ import cv2
 from src.camera_manager import CameraManager
 from src.lsl_trigger import LSLTrigger
 from src.recorder import VideoRecorder
+from src.tray_controller import TrayAction, TrayController, create_tray_controller
+from src.utils import reveal_in_file_manager
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +126,7 @@ class UsbContinuousRecorder:
         self.video_recorder: Optional[VideoRecorder] = None
         self.lsl_trigger: Optional[LSLTrigger] = None
         self.preview: Optional[UsbPreviewWindow] = None
+        self.tray: Optional[TrayController] = None
         self.shutdown_requested = False
         self._shutdown_done = False
 
@@ -183,30 +186,89 @@ class UsbContinuousRecorder:
             logger.info("Recording stopped: %s", file_path.name)
 
 
-    def _handle_auto_split(self, camera_id: int) -> None:
+    def _perform_split(self, reason: str) -> bool:
+        """Close the current segment and start a new one. Returns True on success."""
         if self.video_recorder is None or self.lsl_trigger is None:
-            return
-        if not self.video_recorder.should_split():
-            return
+            return False
+        if not self.video_recorder.is_recording():
+            return False
         old_file = self.video_recorder.get_current_file()
         old_duration = self.video_recorder.get_duration()
         new_file = self.video_recorder.split_recording()
         if new_file and old_file:
-            metadata = {"filename": old_file.name, "session_id": old_file.stem, "duration": old_duration, "timestamp": time.time(), "reason": "auto_split"}
+            metadata = {
+                "filename": old_file.name,
+                "session_id": old_file.stem,
+                "duration": old_duration,
+                "timestamp": time.time(),
+                "reason": reason,
+            }
             self.lsl_trigger.send_stop_marker(metadata)
-            metadata = {"filename": new_file.name, "session_id": new_file.stem, "timestamp": time.time(), "reason": "auto_split"}
+            metadata = {
+                "filename": new_file.name,
+                "session_id": new_file.stem,
+                "timestamp": time.time(),
+                "reason": reason,
+            }
             self.lsl_trigger.send_start_marker(metadata)
-            logger.info("Auto-split at %.1fs — new file: %s", old_duration, new_file.absolute())
+            logger.info(
+                "%s at %.1fs — new file: %s",
+                "Auto-split" if reason == "auto_split" else "Manual split",
+                old_duration,
+                new_file.absolute(),
+            )
+            return True
+        return False
+
+
+    def _handle_auto_split(self, camera_id: int) -> None:
+        if self.video_recorder is None:
+            return
+        if not self.video_recorder.should_split():
+            return
+        self._perform_split("auto_split")
+
+
+    def _drain_tray_actions(self) -> None:
+        if self.tray is None:
+            return
+        output_dir = Path(self.config.get("storage", {}).get("output_dir", "."))
+        manual_split_enabled = bool(self.config.get("hotkeys", {}).get("manual_split_enabled", True))
+        for action in self.tray.drain_actions():
+            if action == TrayAction.EXIT:
+                logger.info("Tray Exit requested")
+                self.shutdown_requested = True
+            elif action == TrayAction.OPEN_FOLDER:
+                current = self.video_recorder.get_current_file() if self.video_recorder else None
+                reveal_in_file_manager(current, output_dir)
+            elif action == TrayAction.SPLIT and manual_split_enabled:
+                if not self._perform_split("manual_split"):
+                    logger.warning("Tray split failed (not recording or split error)")
+            elif action == TrayAction.TOGGLE_CONSOLE:
+                self.tray.toggle_console()
+            elif action == TrayAction.SHOW_CONSOLE:
+                self.tray.show_console()
+            elif action == TrayAction.HIDE_CONSOLE:
+                self.tray.hide_console()
+        ## END for action in self.tray.drain_actions()....
+
+        if self.video_recorder is not None:
+            self.tray.update_recording_state(self.video_recorder.is_recording())
 
 
     def _wait_usb_reconnect(self, camera_id: int) -> bool:
         assert self.camera_manager is not None
         logger.warning("USB camera disconnected; waiting to reconnect…")
         while not self.shutdown_requested:
+            self._drain_tray_actions()
+            if self.shutdown_requested:
+                break
             if self.camera_manager.reconnect_camera(camera_id):
                 logger.info("Camera %s reconnected", camera_id)
                 return True
             time.sleep(0.5)
+        ## END while not self.shutdown_requested....
+
         return False
 
 
@@ -221,10 +283,32 @@ class UsbContinuousRecorder:
             return
         self._send_start_for_file(file_path)
         logger.info("Recording started: %s", file_path.absolute())
+
+        output_dir = Path(self.config.get("storage", {}).get("output_dir", "."))
+        self.tray = create_tray_controller(
+            self.config,
+            get_current_file=lambda: self.video_recorder.get_current_file() if self.video_recorder else None,
+            get_output_dir=lambda: output_dir,
+            is_recording=lambda: bool(self.video_recorder and self.video_recorder.is_recording()),
+        )
+        if self.tray is not None and self.tray.start():
+            self.tray.update_recording_state(True)
+            logger.info(
+                "System tray active: left-click toggles console; "
+                "right-click for Split / Open Folder / Exit"
+            )
+        else:
+            self.tray = None
+
         try:
             while not self.shutdown_requested:
                 loop_start = time.time()
+                self._drain_tray_actions()
+                if self.shutdown_requested:
+                    break
                 if not self.camera_manager.check_usb_connection(camera_id):
+                    if self.tray is not None:
+                        self.tray.update_recording_state(False)
                     self._stop_recording_with_lsl(reason="usb_disconnect")
                     if not self._wait_usb_reconnect(camera_id):
                         break
@@ -235,12 +319,15 @@ class UsbContinuousRecorder:
                         logger.error("Failed to restart recording after reconnect")
                         break
                     self._send_start_for_file(fp)
+                    if self.tray is not None:
+                        self.tray.update_recording_state(True)
                     logger.info("Recording resumed: %s", fp.absolute())
                     continue
                 frame = self.camera_manager.read_frame(camera_id)
                 if frame is None:
                     if self.preview is not None:
                         self.preview.process_terminal_input()
+                    self._drain_tray_actions()
                     logger.warning("Failed to read frame; continuing…")
                     time.sleep(0.05)
                     continue
@@ -251,6 +338,8 @@ class UsbContinuousRecorder:
                     self.video_recorder.write_frame(frame)
                 elapsed = time.time() - loop_start
                 time.sleep(max(0, frame_time - elapsed))
+            ## END while not self.shutdown_requested....
+
         finally:
             self.shutdown()
 
@@ -260,6 +349,13 @@ class UsbContinuousRecorder:
             return
         self._shutdown_done = True
         self.shutdown_requested = True
+        if self.tray is not None:
+            try:
+                self.tray.update_recording_state(False)
+                self.tray.stop()
+            except Exception as e:
+                logger.debug("Tray stop failed: %s", e)
+            self.tray = None
         if self.video_recorder is not None and self.video_recorder.is_recording():
             self._stop_recording_with_lsl(reason="shutdown")
         self.video_recorder = None

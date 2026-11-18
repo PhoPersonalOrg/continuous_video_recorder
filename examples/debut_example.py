@@ -12,6 +12,7 @@ Features:
 - Graceful shutdown with Ctrl+C
 - Stall detection (fails loudly if output stops growing)
 - Press 's' in the console to split to a new file immediately; 'o' to reveal the active file; Ctrl+C to stop
+- Windows system tray: left-click toggles console; right-click Split / Open Folder / Exit; closing console hides to tray
 
 Web Viewer Integration (Optional):
 To view the camera stream in a browser while recording, start the web stream server
@@ -27,7 +28,6 @@ Press 's' to start a new file; 'o' to reveal the active recording; Ctrl+C to sto
 import logging
 import os
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -37,6 +37,8 @@ from src.config_loader import ConfigLoader
 from src.dshow_recorder import DirectShowAVRecorder
 from src.lsl_trigger import LSLTrigger
 from src.timing_sidecar import read_sidecar, sidecar_path_for
+from src.tray_controller import TrayAction, TrayController, create_tray_controller
+from src.utils import reveal_in_file_manager
 
 try:
     import msvcrt
@@ -54,9 +56,9 @@ STALL_TIMEOUT_S = 90.0
 
 recorder: Optional[DirectShowAVRecorder] = None
 lsl_trigger: Optional[LSLTrigger] = None
+tray_controller: Optional[TrayController] = None
 recording_active = False
 _shutdown_requested = False
-
 
 def _build_start_metadata(rec: DirectShowAVRecorder, output_file: Path) -> Dict[str, Any]:
     timing = rec.get_timing_metadata()
@@ -192,31 +194,14 @@ def _poll_console_keys() -> Set[str]:
     return pressed
 
 
-def _reveal_in_file_manager(target: Optional[Path], fallback_dir: Path) -> None:
-    """Open the system file manager, selecting `target` when it exists."""
-    select_path: Optional[Path] = None
-    if target is not None and target.exists():
-        select_path = target.resolve()
-    open_dir = select_path.parent if select_path is not None else fallback_dir.resolve()
-    revealed = select_path if select_path is not None else open_dir
-    try:
-        if sys.platform == "win32":
-            if select_path is not None:
-                subprocess.Popen(f'explorer /select,"{select_path}"')
-            else:
-                subprocess.Popen(f'explorer "{open_dir}"')
-        elif sys.platform == "darwin":
-            if select_path is not None:
-                subprocess.Popen(["open", "-R", str(select_path)])
-            else:
-                subprocess.Popen(["open", str(open_dir)])
-        else:
-            subprocess.Popen(["xdg-open", str(open_dir)])
-        print(f"Revealing in file manager: {revealed}")
-        logger.info("Revealing in file manager: %s", revealed)
-    except Exception as e:
-        logger.warning("Failed to reveal in file manager: %s", e)
-        print(f"Failed to reveal in file manager: {e}")
+def _stop_tray() -> None:
+    global tray_controller
+    if tray_controller is not None:
+        try:
+            tray_controller.stop()
+        except Exception as e:
+            logger.debug("Tray stop failed: %s", e)
+        tray_controller = None
 
 
 def _fail_recording(message: str, exit_code: int = 1, finalize_rc: Optional[int] = None) -> None:
@@ -242,15 +227,21 @@ def _fail_recording(message: str, exit_code: int = 1, finalize_rc: Optional[int]
             lsl_trigger.close()
         except Exception:
             pass
+    _stop_tray()
     sys.exit(exit_code)
 
 
-def signal_handler(sig, frame):
-    global _shutdown_requested
+def _graceful_shutdown(reason: str = "shutdown") -> None:
+    global _shutdown_requested, recording_active
+    if _shutdown_requested:
+        return
     print("\n\nShutting down gracefully...")
-    logger.info("SIGINT received; shutting down")
+    logger.info("Shutdown requested (%s)", reason)
     _shutdown_requested = True
+    if tray_controller is not None:
+        tray_controller.update_recording_state(False)
     saved = _stop_current_segment("shutdown")
+    recording_active = False
     if lsl_trigger is not None:
         lsl_trigger.close()
     if saved is not None:
@@ -261,15 +252,20 @@ def signal_handler(sig, frame):
             timing.get("duration_wall_seconds"),
             timing.get("ffmpeg_returncode"),
         )
+    _stop_tray()
     print("Shutdown complete")
     sys.exit(0)
+
+
+def signal_handler(sig, frame):
+    _graceful_shutdown("SIGINT")
 
 
 signal.signal(signal.SIGINT, signal_handler)
 
 
 def main():
-    global recorder, lsl_trigger, recording_active, _shutdown_requested
+    global recorder, lsl_trigger, tray_controller, recording_active, _shutdown_requested
 
     output_dir = config["storage"]["output_dir"]
     auto_split = float(config.get("storage", {}).get("auto_split_duration", 3600))
@@ -312,7 +308,25 @@ def main():
         logger.exception("Failed to start recording")
         sys.exit(1)
 
-    print("Recording in progress... Press 's' to start a new file; 'o' to reveal the active file; Ctrl+C to stop\n")
+    tray_controller = create_tray_controller(
+        config,
+        get_current_file=lambda: recorder.get_current_file() if recorder else None,
+        get_output_dir=lambda: Path(output_dir),
+        is_recording=lambda: bool(recorder and recorder.is_recording()),
+    )
+    if tray_controller is not None and tray_controller.start():
+        tray_controller.update_recording_state(True)
+        print(
+            "System tray active: left-click toggles console; "
+            "right-click for Split / Open Folder / Exit. Closing the console hides to tray.\n"
+        )
+    else:
+        tray_controller = None
+
+    print(
+        "Recording in progress... Press 's' to start a new file; "
+        "'o' to reveal the active file; Ctrl+C or tray Exit to stop\n"
+    )
     logger.info("Recording loop started (stall timeout %.0fs)", STALL_TIMEOUT_S)
     poll_interval = 0.5
     last_heartbeat = time.monotonic()
@@ -370,9 +384,27 @@ def main():
             )
             last_heartbeat = now
 
+        if tray_controller is not None:
+            for action in tray_controller.drain_actions():
+                if action == TrayAction.EXIT:
+                    _graceful_shutdown("tray_exit")
+                elif action == TrayAction.OPEN_FOLDER:
+                    reveal_in_file_manager(recorder.get_current_file(), Path(output_dir))
+                elif action == TrayAction.SPLIT and manual_split_enabled and recorder.is_recording():
+                    _split_or_fail("manual_split")
+                elif action == TrayAction.TOGGLE_CONSOLE:
+                    tray_controller.toggle_console()
+                elif action == TrayAction.SHOW_CONSOLE:
+                    tray_controller.show_console()
+                elif action == TrayAction.HIDE_CONSOLE:
+                    tray_controller.hide_console()
+            ## END for action in tray_controller.drain_actions()....
+
+            tray_controller.update_recording_state(recorder.is_recording())
+
         keys = _poll_console_keys()
         if "o" in keys:
-            _reveal_in_file_manager(recorder.get_current_file(), Path(output_dir))
+            reveal_in_file_manager(recorder.get_current_file(), Path(output_dir))
         if manual_split_enabled and "s" in keys and recorder.is_recording():
             _split_or_fail("manual_split")
 
@@ -382,6 +414,8 @@ def main():
         rc = recorder.poll_process()
         if rc is not None:
             recording_active = False
+            if tray_controller is not None:
+                tray_controller.update_recording_state(False)
             _fail_recording(f"FFmpeg exited unexpectedly (code {rc})", finalize_rc=rc)
 
         time.sleep(poll_interval)
