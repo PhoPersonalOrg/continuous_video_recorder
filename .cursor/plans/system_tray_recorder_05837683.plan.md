@@ -4,7 +4,7 @@ overview: Add a shared Windows system-tray controller so debut (and epocX) can k
 todos:
   - id: tray-module
     content: Add src/tray_controller.py (pystray, Pillow icons, console HWND show/hide + WM_CLOSE, action queue, flash animation)
-    status: pending
+    status: in_progress
   - id: config-tray
     content: Extend config_loader defaults/validation; add tray blocks to config_webcam_debut.yaml and config_epocX_eyecamUSB.yaml
     status: pending
