@@ -11,7 +11,8 @@ Optional web viewer (separate process, same YAML):
 Usage:
   uv run examples/epocXEyeCamUSB_example.py
 
-Press Ctrl+C to stop and save.
+Press Ctrl+C or use the system-tray Exit menu to stop and save.
+Tray: left-click toggles console; right-click for Split / Open Folder / Exit.
 """
 
 import signal
@@ -56,7 +57,10 @@ def main():
     preview_enabled = bool(config.get("preview", {}).get("enabled", False))
     if preview_enabled:
         print("Interactive preview opens automatically. Closing it will not stop recording. Press 'p' in the terminal to reopen it.")
-    print("Recording starts automatically. Press Ctrl+C to stop.\n")
+    print(
+        "Recording starts automatically. Press Ctrl+C or tray Exit to stop.\n"
+        "System tray: left-click toggles console; right-click for Split / Open Folder / Exit.\n"
+    )
     recorder.run(camera_id=0)
 
 
