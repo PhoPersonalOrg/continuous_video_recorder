@@ -73,3 +73,4 @@ tray:
   indicator_shape: circle  # hexagon | circle (not square)
   indicator_color: "#FF69B4"  # pink
   flash_interval_ms: 500
+  minimize_to_tray: true  # minimize button hides console to tray (not taskbar)

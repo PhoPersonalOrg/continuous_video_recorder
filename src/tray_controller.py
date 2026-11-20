@@ -32,8 +32,12 @@ _ICON_SIZE = 64
 SW_HIDE = 0
 SW_SHOW = 5
 WM_CLOSE = 0x0010
+WM_SYSCOMMAND = 0x0112
+WM_SIZE = 0x0005
+SIZE_MINIMIZED = 1
 GWL_WNDPROC = -4
 SC_CLOSE = 0xF060
+SC_MINIMIZE = 0xF020
 MF_BYCOMMAND = 0x0000
 
 
@@ -52,6 +56,7 @@ class TrayConfig:
     indicator_shape: str = "circle"
     indicator_color: str = "#FF0000"
     flash_interval_ms: int = 500
+    minimize_to_tray: bool = True
     camera_label: str = "Camera"
 
     @classmethod
@@ -74,6 +79,7 @@ class TrayConfig:
             indicator_shape=shape,
             indicator_color=color,
             flash_interval_ms=interval,
+            minimize_to_tray=bool(tray.get("minimize_to_tray", True)),
             camera_label=label,
         )
 
@@ -174,9 +180,10 @@ def build_tray_icon(
 
 
 class _ConsoleWindowController:
-    """Show/hide the attached console; intercept WM_CLOSE to hide when possible."""
+    """Show/hide the attached console; intercept close/minimize to hide when possible."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, minimize_to_tray: bool = True) -> None:
+        self._minimize_to_tray = minimize_to_tray
         self._hwnd: Optional[int] = None
         self._old_wndproc: Optional[int] = None
         self._wndproc_ref: Any = None
@@ -200,6 +207,15 @@ class _ConsoleWindowController:
             return
         self._install_close_handler()
 
+    def _should_hide_on_minimize(self, msg: int, wparam: int) -> bool:
+        if not self._minimize_to_tray:
+            return False
+        if msg == WM_SYSCOMMAND and (int(wparam) & 0xFFF0) == SC_MINIMIZE:
+            return True
+        if msg == WM_SIZE and int(wparam) == SIZE_MINIMIZED:
+            return True
+        return False
+
     def _install_close_handler(self) -> None:
         assert self._hwnd is not None and self._user32 is not None
         import ctypes
@@ -212,6 +228,9 @@ class _ConsoleWindowController:
 
         def _wnd_proc(hwnd, msg, wparam, lparam):  # noqa: ANN001
             if msg == WM_CLOSE:
+                self.hide()
+                return 0
+            if self._should_hide_on_minimize(int(msg), int(wparam)):
                 self.hide()
                 return 0
             if self._old_wndproc:
@@ -234,7 +253,12 @@ class _ConsoleWindowController:
             set_long.restype = ctypes.c_void_p
             self._old_wndproc = get_long(self._hwnd, GWL_WNDPROC)
             set_long(self._hwnd, GWL_WNDPROC, ctypes.cast(self._wndproc_ref, ctypes.c_void_p))
-            logger.info("Console WM_CLOSE handler installed (close hides to tray)")
+            if self._minimize_to_tray:
+                logger.info(
+                    "Console WM_CLOSE/minimize handlers installed (close and minimize hide to tray)"
+                )
+            else:
+                logger.info("Console WM_CLOSE handler installed (close hides to tray)")
         except Exception as e:
             logger.warning("Failed to subclass console window (%s); removing SC_CLOSE", e)
             self._remove_close_menu()
@@ -302,7 +326,9 @@ class TrayController:
         self._stop_event = threading.Event()
         self._badge_on = True
         self._recording = False
-        self._console = _ConsoleWindowController()
+        self._console = _ConsoleWindowController(
+            minimize_to_tray=tray_config.minimize_to_tray
+        )
         self._lock = threading.Lock()
 
     @property

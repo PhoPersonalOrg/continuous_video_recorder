@@ -71,6 +71,7 @@ class ConfigLoader:
             "indicator_shape": "circle",  # hexagon | circle (not square — reserved for stop)
             "indicator_color": "#FF0000",
             "flash_interval_ms": 500,
+            "minimize_to_tray": True,  # minimize button hides console to tray instead of taskbar
         },
     }
     
@@ -193,6 +194,7 @@ class ConfigLoader:
         color = str(tray_config.get("indicator_color", "#FF0000")).strip()
         assert color.startswith("#") and len(color) in (7, 9), "tray.indicator_color must be #RRGGBB or #RRGGBBAA"
         assert int(tray_config.get("flash_interval_ms", 500)) >= 100
+        assert isinstance(tray_config.get("minimize_to_tray", True), bool)
 
         logger.info("Configuration validated successfully")
 
