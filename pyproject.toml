@@ -32,6 +32,7 @@ phopylslhelper = { path = "../PhoPyLSLhelper", editable = true }
 [project.scripts]
 debut-example = "examples.debut_example:main"
 epocx-eyecam-usb = "examples.epocXEyeCamUSB_example:main"
+m1mbp-webcam = "examples.m1mbp_webcam_example:main"
 
 [project.optional-dependencies]
 windows = [
