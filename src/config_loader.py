@@ -66,6 +66,13 @@ class ConfigLoader:
             "write_timing_sidecar": True,
             "use_wallclock_timestamps": False,
         },
+        "tray": {
+            "enabled": True,
+            "indicator_shape": "circle",  # hexagon | circle (not square — reserved for stop)
+            "indicator_color": "#FF0000",
+            "flash_interval_ms": 500,
+            "minimize_to_tray": True,  # minimize button hides console to tray instead of taskbar
+        },
     }
     
     @classmethod
@@ -178,6 +185,16 @@ class ConfigLoader:
         assert capture_config.get("backend", "frame_pipe") in ["frame_pipe", "dshow_av"]
         assert isinstance(capture_config.get("write_timing_sidecar", True), bool)
         assert isinstance(capture_config.get("use_wallclock_timestamps", False), bool)
+
+        tray_config = config.get("tray", {})
+        assert isinstance(tray_config.get("enabled", True), bool)
+        shape = str(tray_config.get("indicator_shape", "circle")).strip().lower()
+        assert shape != "square", "tray.indicator_shape must not be 'square' (reserved for stop)"
+        assert shape in ["hexagon", "circle"], f"tray.indicator_shape must be hexagon or circle (got {shape!r})"
+        color = str(tray_config.get("indicator_color", "#FF0000")).strip()
+        assert color.startswith("#") and len(color) in (7, 9), "tray.indicator_color must be #RRGGBB or #RRGGBBAA"
+        assert int(tray_config.get("flash_interval_ms", 500)) >= 100
+        assert isinstance(tray_config.get("minimize_to_tray", True), bool)
 
         logger.info("Configuration validated successfully")
 

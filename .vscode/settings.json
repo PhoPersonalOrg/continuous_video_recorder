@@ -5,7 +5,9 @@
     "**/__pycache__": true,
     "**/.kiro": true,
     "**/.pytest_cache": true,
-    "**/.specstory": true
+    "**/.specstory": true,
+    "**corder/.ts": true,
+    "**corder/.mypy_cache": true
   },
   "python.analysis.typeCheckingMode": "off",
   "python.testing.unittestArgs": [

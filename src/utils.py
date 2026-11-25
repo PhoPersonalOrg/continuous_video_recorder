@@ -1,6 +1,7 @@
 """Helper functions for logging, file management, and signal handling."""
 import logging
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Callable
@@ -82,6 +83,35 @@ def ensure_directory(path: Path) -> Path:
     return path
 
 
+def prompt_for_usable_directory(path: Path, label: str = "Recording directory") -> Path:
+    """Return `path` if it can be created, otherwise prompt the user for a replacement until one works.
+
+    Args:
+        path: Desired directory path.
+        label: Human-readable name of the directory, shown in the prompt.
+
+    Returns:
+        A directory path that exists.
+
+    Raises:
+        SystemExit: If the user enters nothing or stdin is not interactive.
+    """
+    path = Path(path)
+    while True:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except OSError as e:
+            print(f"{label} '{path}' is not usable: {e}", file=sys.stderr)
+        try:
+            answer = input(f"Enter a new {label.lower()} (blank to quit): ").strip().strip('"')
+        except EOFError:
+            answer = ""
+        if not answer:
+            raise SystemExit(f"No usable {label.lower()}; exiting.")
+        path = Path(answer).expanduser()
+
+
 def generate_timestamped_filename(prefix: str = "Record", extension: str = "mp4", output_dir: Optional[Path] = None, filename_format: Optional[str] = None) -> Path:
     """Generate a timestamped filename.
     
@@ -142,4 +172,32 @@ def format_duration(seconds: float) -> str:
     parts.append(f"{secs}s")
     
     return " ".join(parts)
+
+
+def reveal_in_file_manager(target: Optional[Path], fallback_dir: Path) -> None:
+    """Open the system file manager, selecting `target` when it exists."""
+    select_path: Optional[Path] = None
+    if target is not None and target.exists():
+        select_path = target.resolve()
+    open_dir = select_path.parent if select_path is not None else fallback_dir.resolve()
+    revealed = select_path if select_path is not None else open_dir
+    log = logging.getLogger("continuous_video_recorder")
+    try:
+        if sys.platform == "win32":
+            if select_path is not None:
+                subprocess.Popen(f'explorer /select,"{select_path}"')
+            else:
+                subprocess.Popen(f'explorer "{open_dir}"')
+        elif sys.platform == "darwin":
+            if select_path is not None:
+                subprocess.Popen(["open", "-R", str(select_path)])
+            else:
+                subprocess.Popen(["open", str(open_dir)])
+        else:
+            subprocess.Popen(["xdg-open", str(open_dir)])
+        print(f"Revealing in file manager: {revealed}")
+        log.info("Revealing in file manager: %s", revealed)
+    except Exception as e:
+        log.warning("Failed to reveal in file manager: %s", e)
+        print(f"Failed to reveal in file manager: {e}")
 
