@@ -1,0 +1,72 @@
+video:
+  resolution: [1280, 720]
+  fps: 30
+  codec: "H264"
+  quality: "medium"
+  compression_mode: true   # Use FFMPEG (WriteGear compression mode) instead of OpenCV
+
+detection:
+  face_confidence: 0.5
+  motion_threshold: 30
+  face_check_interval: 5  # Check face every N frames
+
+buffer:
+  absence_timeout: 35  # seconds
+
+storage:
+  output_dir: "/Users/pho/Movies/REC_continuous_video_recorder"
+  min_duration: 5  # minimum seconds to save a video
+  auto_split_duration: 3600  # auto-split recordings every N seconds (3600 = 1 hour)
+  filename_format: "CAM_%YYYY%-%MM%-%DD%T%HH%%MIN%%SS%"  # Debut-style filename with datetime placeholders
+  audio_enabled: true
+  # Must match AVFoundation name: ffmpeg -f avfoundation -list_devices true -i ""
+  audio_device: "MacBook Pro Microphone"
+
+capture:
+  backend: "frame_pipe"  # macOS: OpenCV/AVFoundation frame pipe (not Windows dshow_av)
+  rtbufsize: "512M"
+  write_timing_sidecar: true
+  use_wallclock_timestamps: true
+
+
+webcam:
+  # Built-in FaceTime HD Camera (AVFoundation index 0)
+  devices: [0]
+  camera_0:
+    name: "FaceTime HD Camera"
+    mode: "motion_detect"
+    resolution: [1280, 720]
+    fps: 30
+
+lsl:
+  enabled: true
+  stream_name: "VideoRecorderMarkers"
+  stream_type: "Markers"
+  auto_source_id: true
+  marker_start: "RECORDING_START"
+  marker_stop: "RECORDING_STOP"
+  include_metadata: true  # Include filename, session ID in marker metadata
+
+
+preview:
+  enabled: true
+  update_interval_ms: 30  # Frame update interval (~33 FPS)
+  show_timestamp: true    # Show timestamp overlay on frames
+  preview_resolution: [640, 480]  # Optional: downscale preview (leave empty for full resolution)
+
+
+
+# Web UI Configuration
+web_ui:
+  enabled: true  # Enable/disable web-based stream viewer
+  port: 5000  # HTTP server port (1024-65535)
+  host: "127.0.0.1"  # localhost only on this Mac
+  jpeg_quality: 85  # JPEG encoding quality (1-100, higher = better quality but larger size)
+  max_buffer_size: 2  # Maximum frames to buffer per camera
+
+# System tray: camera icon + flashing recording indicator
+tray:
+  enabled: true
+  indicator_shape: hexagon  # hexagon | circle (not square)
+  indicator_color: "#FF8C00"  # orange
+  flash_interval_ms: 500
