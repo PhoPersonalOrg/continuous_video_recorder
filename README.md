@@ -308,6 +308,69 @@ Example: `session_2025-01-15_14-30-25.mp4`
 
 Logs are saved in the `recordings/logs/` directory with timestamped filenames.
 
+## 24/7 Desktop Recording Backend (FFmpeg DDAGrab)
+
+For continuous (24/7) low-overhead Windows desktop recording at up to 4 fps, `DDAGrabRecorder` (`src/ddagrab_recorder.py`) captures the screen via DXGI Desktop Duplication (`ddagrab` lavfi source) and keeps frames on the GPU as D3D11 textures all the way into a hardware encoder (`NVENC` / `QSV` / `AMF`):
+
+- **Zero CPU pixel path**: Frames never touch Python or CPU memory (`hwdownload`, CPU `scale`/`format`, and software encoders like `libx264`/`libx265` are strictly forbidden).
+- **Near-zero idle cost**: With `dup_frames: false` and `-fps_mode vfr`, unchanged desktop screens emit zero frames, costing ~0% CPU/GPU and ~0 disk while idle.
+- **Crash-safe Matroska segments**: Writes hourly `.mkv` segments (`-segment_format matroska`) and sends `q` to FFmpeg stdin on clean shutdown so segments remain readable even after power loss or forced termination.
+- **24/7 supervision**: Automatically restarts FFmpeg with exponential backoff across UAC prompts, workstation lock/unlock, sleep/resume, DPI/resolution changes, and monitor hot-plugs.
+
+### Running Desktop Capture
+
+Requires **Windows 8+** and **FFmpeg >= 6.0** (`>= 7.0` required for `dup_frames: false`; gyan.dev or BtbN builds work out of the box):
+
+```powershell
+# Run with config_ddagrab_desktop.yaml
+python examples/ddagrab_example.py
+
+# Override monitors, quality, and output folder from the CLI
+python examples/ddagrab_example.py --monitors 0 1 --cq 32 --out D:\rec
+
+# Or via the console script
+uv run ddagrab-desktop --monitors 0 --cq 32 --out D:\rec
+```
+
+### Configuration (`config_ddagrab_desktop.yaml`)
+
+- `encoder`: `"auto"` (probes `av1_nvenc` -> `hevc_nvenc` -> `av1_qsv` -> `hevc_qsv` -> `av1_amf` -> `hevc_amf` -> `h264_*` with a 4-frame live encode; never falls back to software). Use AV1 on RTX 40+ / Intel Arc / AMD RDNA3+ for the smallest files.
+- `cq`: `32` default (`30`–`35` recommended for crisp, readable desktop text; higher values produce smaller files). Mapped automatically to `-cq` (NVENC), `-global_quality` (QSV), or `-rc cqp -qp_i/-qp_p` (AMF).
+- `framerate`: `4` (maximum capture rate; 1 frame per 250 ms).
+- `dup_frames`: `false` (skip duplicate frames when the screen is static).
+- `gop`: `1200` (1 keyframe per 5 minutes at 4 fps).
+- `segment_seconds`: `3600` (1-hour `.mkv` segments).
+- `output_idx`: `[0]` (monitor index or list of monitor indices; spawns one supervised FFmpeg process per monitor).
+- `retention_max_gb` / `retention_max_days`: Optional automatic cleanup deleting the oldest `.mkv` segments every 10 minutes.
+- `process_priority`: `"below_normal"` (default) | `"idle"` | `"normal"`.
+
+> **Disk usage tuning**: Measure total disk usage after your first **24 hours** of normal desktop activity and tune `cq` (e.g. `30`–`36`) and `gop` accordingly, alongside `retention_max_gb` / `retention_max_days`.
+
+### Running Automatically at Logon (Windows Task Scheduler)
+
+`ddagrab` uses DXGI Desktop Duplication and **must run in the interactive user session**. It **cannot** run as a Windows Service in Session 0 because Session 0 has no access to the interactive desktop.
+
+To start automatically when you sign in:
+1. Open **Task Scheduler** -> **Create Task...**
+2. **General** tab: Select **Run only when user is logged on** (do *not* select "Run whether user is logged on or not").
+3. **Triggers** tab: New -> Begin the task: **At log on** (for your user account).
+4. **Actions** tab: Start a program -> `uv.exe` (or `.venv\Scripts\python.exe`) with arguments `run ddagrab-desktop --config C:\path\to\config_ddagrab_desktop.yaml` and **Start in** set to the repository root.
+5. **Settings** tab: Uncheck "Stop the task if it runs longer than: 3 days" so it runs continuously 24/7.
+
+### Extracting Frames or Clips
+
+Extract a single PNG frame at a timestamp inside an hourly segment:
+
+```powershell
+ffmpeg -ss 00:23:00 -i 2026-11-25_14-00-00_mon0.mkv -frames:v 1 out.png
+```
+
+Losslessly cut a sub-clip without re-encoding:
+
+```powershell
+ffmpeg -ss 00:20:00 -to 00:25:00 -i 2026-11-25_14-00-00_mon0.mkv -c copy clip.mkv
+```
+
 ## Troubleshooting
 
 ### Camera Not Found
@@ -364,6 +427,8 @@ continuous_video_recorder/
 │   ├── camera_manager.py   # Multi-camera management using VidGear CamGear
 │   ├── detector.py         # Face and motion detection logic
 │   ├── recorder.py         # Video recording management using VidGear WriteGear
+│   ├── dshow_recorder.py   # DirectShow synchronized A/V FFmpeg subprocess recorder
+│   ├── ddagrab_recorder.py # 24/7 GPU-only Windows desktop FFmpeg ddagrab recorder
 │   ├── lsl_trigger.py      # LSL marker stream for recording events
 │   ├── config_loader.py    # Configuration loading and validation
 │   └── utils.py            # Helper functions (logging, file management)
@@ -375,6 +440,8 @@ continuous_video_recorder/
 
 - **CameraManager**: Manages multiple camera streams using VidGear's CamGear API, providing multi-threaded frame capture
 - **VideoRecorder**: Handles video file writing using VidGear's WriteGear API in non-compression mode
+- **DirectShowAVRecorder**: Single-graph DirectShow audio+video capture via FFmpeg subprocess with timing sidecars
+- **DDAGrabRecorder**: 24/7 GPU-only Windows desktop supervisor (`ddagrab` -> NVENC/QSV/AMF -> VFR Matroska segments)
 - **PresenceDetector**: Per-camera presence detection using hybrid face and motion detection
 - **LSLTrigger**: Shared LSL marker stream with camera identification in metadata
 

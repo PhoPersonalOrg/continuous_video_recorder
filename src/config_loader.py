@@ -1,10 +1,27 @@
 """Configuration loading and validation."""
+import copy
+import re
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+_DDAGRAB_VIDEO_SIZE_RE = re.compile(r"^(\d+)x(\d+)$", re.IGNORECASE)
+_DDAGRAB_ENCODERS = [
+    "auto",
+    "av1_nvenc",
+    "hevc_nvenc",
+    "av1_qsv",
+    "hevc_qsv",
+    "av1_amf",
+    "hevc_amf",
+    "h264_nvenc",
+    "h264_qsv",
+    "h264_amf",
+]
+_DDAGRAB_PRIORITIES = ["below_normal", "idle", "normal"]
 
 
 class ConfigLoader:
@@ -66,6 +83,28 @@ class ConfigLoader:
             "write_timing_sidecar": True,
             "use_wallclock_timestamps": False,
         },
+        "ddagrab": {
+            "ffmpeg_path": None,
+            "output_dir": "./desktop_recordings",
+            "framerate": 4,
+            "dup_frames": False,
+            "output_idx": [0],
+            "draw_mouse": True,
+            "video_size": None,
+            "offset_x": None,
+            "offset_y": None,
+            "encoder": "auto",
+            "cq": 32,
+            "gop": 1200,
+            "segment_seconds": 3600,
+            "filename_pattern": "%Y-%m-%d_%H-%M-%S_mon{idx}.mkv",
+            "restart_backoff_initial": 2,
+            "restart_backoff_max": 60,
+            "restart_stable_reset_s": 300,
+            "retention_max_gb": None,
+            "retention_max_days": None,
+            "process_priority": "below_normal",
+        },
         "tray": {
             "enabled": True,
             "indicator_shape": "circle",  # hexagon | circle (not square — reserved for stop)
@@ -88,7 +127,7 @@ class ConfigLoader:
         if config_path is None:
             config_path = Path("config.yaml")
         
-        config = cls.DEFAULT_CONFIG.copy()
+        config = copy.deepcopy(cls.DEFAULT_CONFIG)
         
         if config_path.exists():
             try:
@@ -182,9 +221,72 @@ class ConfigLoader:
         assert isinstance(config.get("hotkeys", {}).get("manual_split_enabled", True), bool)
 
         capture_config = config.get("capture", {})
-        assert capture_config.get("backend", "frame_pipe") in ["frame_pipe", "dshow_av"]
+        assert capture_config.get("backend", "frame_pipe") in ["frame_pipe", "dshow_av", "ddagrab"]
         assert isinstance(capture_config.get("write_timing_sidecar", True), bool)
         assert isinstance(capture_config.get("use_wallclock_timestamps", False), bool)
+
+        ddagrab_config = config.get("ddagrab", {})
+        if ddagrab_config:
+            assert ddagrab_config.get("encoder", "auto") in _DDAGRAB_ENCODERS, (
+                f"ddagrab.encoder must be one of {_DDAGRAB_ENCODERS}"
+            )
+            framerate = ddagrab_config.get("framerate", 4)
+            assert not isinstance(framerate, bool) and int(framerate) > 0
+            assert isinstance(ddagrab_config.get("dup_frames", False), bool)
+            assert isinstance(ddagrab_config.get("draw_mouse", True), bool)
+
+            output_idx = ddagrab_config.get("output_idx", [0])
+            if isinstance(output_idx, int) and not isinstance(output_idx, bool):
+                assert output_idx >= 0
+                ddagrab_config["output_idx"] = [output_idx]
+            else:
+                assert isinstance(output_idx, list) and len(output_idx) > 0
+                for mon_idx in output_idx:
+                    assert isinstance(mon_idx, int) and not isinstance(mon_idx, bool) and mon_idx >= 0
+                ## END for mon_idx in output_idx....
+
+            video_size = ddagrab_config.get("video_size")
+            if video_size is not None:
+                if isinstance(video_size, list):
+                    assert len(video_size) == 2 and all(isinstance(v, int) and v > 0 for v in video_size)
+                else:
+                    match = _DDAGRAB_VIDEO_SIZE_RE.match(str(video_size).strip())
+                    assert match is not None and int(match.group(1)) > 0 and int(match.group(2)) > 0
+
+            for offset_key in ("offset_x", "offset_y"):
+                offset_val = ddagrab_config.get(offset_key)
+                if offset_val is not None:
+                    assert isinstance(offset_val, int) and not isinstance(offset_val, bool)
+            ## END for offset_key in ("offset_x", "offset_y")....
+
+            cq = ddagrab_config.get("cq", 32)
+            gop = ddagrab_config.get("gop", 1200)
+            segment_seconds = ddagrab_config.get("segment_seconds", 3600)
+            assert not isinstance(cq, bool) and int(cq) > 0
+            assert not isinstance(gop, bool) and int(gop) > 0
+            assert not isinstance(segment_seconds, bool) and int(segment_seconds) > 0
+
+            pattern = str(ddagrab_config.get("filename_pattern", "%Y-%m-%d_%H-%M-%S_mon{idx}.mkv")).strip()
+            assert pattern.lower().endswith(".mkv"), "ddagrab.filename_pattern must end with .mkv"
+            if len(ddagrab_config.get("output_idx", [0])) > 1:
+                assert "{idx}" in pattern, "ddagrab.filename_pattern must contain {idx} for multi-monitor capture"
+
+            backoff_initial = float(ddagrab_config.get("restart_backoff_initial", 2))
+            backoff_max = float(ddagrab_config.get("restart_backoff_max", 60))
+            stable_reset = float(ddagrab_config.get("restart_stable_reset_s", 300))
+            assert backoff_initial > 0
+            assert backoff_max >= backoff_initial
+            assert stable_reset > 0
+
+            max_gb = ddagrab_config.get("retention_max_gb")
+            if max_gb is not None:
+                assert float(max_gb) > 0
+            max_days = ddagrab_config.get("retention_max_days")
+            if max_days is not None:
+                assert float(max_days) > 0
+
+            priority = str(ddagrab_config.get("process_priority", "below_normal")).strip().lower()
+            assert priority in _DDAGRAB_PRIORITIES, f"ddagrab.process_priority must be one of {_DDAGRAB_PRIORITIES}"
 
         tray_config = config.get("tray", {})
         assert isinstance(tray_config.get("enabled", True), bool)

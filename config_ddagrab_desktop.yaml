@@ -1,0 +1,27 @@
+# 24/7 GPU-only Windows desktop recording configuration (FFmpeg ddagrab + NVENC/QSV/AMF).
+# Must run in the interactive user session (e.g. Task Scheduler "At log on", NOT a Session 0 Windows service).
+
+capture:
+  backend: ddagrab
+
+ddagrab:
+  ffmpeg_path: null          # null -> shutil.which("ffmpeg"); requires FFmpeg >= 6.0 (>= 7.0 for dup_frames=false)
+  output_dir: ./desktop_recordings
+  framerate: 4               # Capture cap in fps (1 frame per 250 ms max)
+  dup_frames: false          # Critical: emit no frames when screen is unchanged (~0 idle CPU/disk)
+  output_idx: [0]            # Monitor indices; e.g. [0, 1] launches one FFmpeg process per monitor
+  draw_mouse: true
+  video_size: null           # Optional capture region "WIDTHxHEIGHT" (e.g. "1920x1080")
+  offset_x: null             # Optional region X offset
+  offset_y: null             # Optional region Y offset
+  encoder: auto              # auto | av1_nvenc | hevc_nvenc | h264_nvenc | av1_qsv | hevc_qsv | h264_qsv | av1_amf | hevc_amf | h264_amf
+  cq: 32                     # Constant quality target (30-35 recommended for readable desktop text; higher = smaller files)
+  gop: 1200                  # Keyframe interval in frames (1200 = 5 min at 4 fps)
+  segment_seconds: 3600      # 1-hour crash-resilient Matroska (.mkv) segments
+  filename_pattern: "%Y-%m-%d_%H-%M-%S_mon{idx}.mkv"
+  restart_backoff_initial: 2
+  restart_backoff_max: 60
+  restart_stable_reset_s: 300
+  retention_max_gb: null     # Optional max total GiB before deleting oldest .mkv segments
+  retention_max_days: null   # Optional max segment age in days before deleting oldest .mkv segments
+  process_priority: below_normal   # below_normal | idle | normal
