@@ -36,6 +36,7 @@ from typing import Any, Dict, Optional, Set
 from src.config_loader import ConfigLoader
 from src.dshow_recorder import DirectShowAVRecorder
 from src.lsl_trigger import LSLTrigger
+from src.source_singleton import SourceAlreadyLockedError, SourceSingletonGuard, acquire_config_locks
 from src.timing_sidecar import read_sidecar, sidecar_path_for
 from src.tray_controller import TrayAction, TrayController, create_tray_controller
 from src.utils import reveal_in_file_manager
@@ -57,6 +58,7 @@ STALL_TIMEOUT_S = 90.0
 recorder: Optional[DirectShowAVRecorder] = None
 lsl_trigger: Optional[LSLTrigger] = None
 tray_controller: Optional[TrayController] = None
+source_lock: Optional[SourceSingletonGuard] = None
 recording_active = False
 _shutdown_requested = False
 
@@ -204,6 +206,16 @@ def _stop_tray() -> None:
         tray_controller = None
 
 
+def _release_source_lock() -> None:
+    global source_lock
+    if source_lock is not None:
+        try:
+            source_lock.release()
+        except Exception as e:
+            logger.debug("Source lock release failed: %s", e)
+        source_lock = None
+
+
 def _fail_recording(message: str, exit_code: int = 1, finalize_rc: Optional[int] = None) -> None:
     """Finalize if possible, print diagnostics, and exit non-zero."""
     global recording_active
@@ -228,6 +240,7 @@ def _fail_recording(message: str, exit_code: int = 1, finalize_rc: Optional[int]
         except Exception:
             pass
     _stop_tray()
+    _release_source_lock()
     sys.exit(exit_code)
 
 
@@ -253,6 +266,7 @@ def _graceful_shutdown(reason: str = "shutdown") -> None:
             timing.get("ffmpeg_returncode"),
         )
     _stop_tray()
+    _release_source_lock()
     print("Shutdown complete")
     sys.exit(0)
 
@@ -265,7 +279,23 @@ signal.signal(signal.SIGINT, signal_handler)
 
 
 def main():
-    global recorder, lsl_trigger, tray_controller, recording_active, _shutdown_requested
+    global recorder, lsl_trigger, tray_controller, source_lock, recording_active, _shutdown_requested
+
+    backend = config.get("capture", {}).get("backend", "frame_pipe")
+    if backend != "dshow_av":
+        print(f"ERROR: debut_example requires capture.backend=dshow_av (got {backend!r})")
+        sys.exit(1)
+
+    try:
+        source_lock = acquire_config_locks(
+            config,
+            program="debut-example",
+            config_path=_CONFIG_PATH,
+        )
+    except SourceAlreadyLockedError as e:
+        logger.error("%s", e)
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
 
     output_dir = config["storage"]["output_dir"]
     auto_split = float(config.get("storage", {}).get("auto_split_duration", 3600))
@@ -275,11 +305,7 @@ def main():
         logger.info("Output directory ready: %s", output_dir)
     except Exception as e:
         print(f"ERROR: Failed to create output directory: {e}")
-        sys.exit(1)
-
-    backend = config.get("capture", {}).get("backend", "frame_pipe")
-    if backend != "dshow_av":
-        print(f"ERROR: debut_example requires capture.backend=dshow_av (got {backend!r})")
+        _release_source_lock()
         sys.exit(1)
 
     print("\nStarting DirectShow synchronized A/V recording...")
@@ -306,6 +332,7 @@ def main():
     except Exception as e:
         print(f"ERROR: Failed to start recording: {e}")
         logger.exception("Failed to start recording")
+        _release_source_lock()
         sys.exit(1)
 
     tray_controller = create_tray_controller(

@@ -371,6 +371,43 @@ Losslessly cut a sub-clip without re-encoding:
 ffmpeg -ss 00:20:00 -to 00:25:00 -i 2026-11-25_14-00-00_mon0.mkv -c copy clip.mkv
 ```
 
+## Recording Groups, Status Window, & Source Singletons
+
+To supervise multiple independent recording sources (for example `ddagrab` desktop capture and `debut` DirectShow webcam A/V) inside a **single process** with **one Windows system tray icon** and a **PyQt6 Status & Control Window**:
+
+```powershell
+# Launch the default Desktop + Debut recording group
+uv run recording-group
+# or: .\scripts\recording-group.ps1
+
+# Custom group YAML or ad-hoc list of existing standalone source YAMLs
+uv run recording-group --config config_group_debut_ddagrab.yaml
+uv run recording-group --sources config_ddagrab_desktop.yaml config_webcam_debut.yaml
+
+# Headless tray-only mode with console hidden at startup
+uv run recording-group --no-window --hide-console
+```
+
+### Cross-Process Per-Source Singleton Locks
+
+Both `recording-group` and standalone launchers (`debut-example`, `ddagrab-desktop`, `epocx-eyecam-usb`, `main.py`) acquire OS-level per-source locks (`Local\CVR_Source_v1_...` Win32 named mutexes on Windows; `flock` on macOS/Linux) keyed by canonical hardware target (`ddagrab:monitor_0`, `camera:hd_pro_webcam_c920`, etc.):
+
+- While a recording group is running, launching a standalone script (or overlapping group) for any monitored source is blocked immediately with exit code `2` and reports the owning PID and config.
+- Launching a recording group uses **all-or-nothing** lock acquisition: if any member source is already running in another process, the group rolls back and exits cleanly before starting capture.
+- Stopping an individual source from the tray or status window retains its singleton lock until the group exits, and Windows automatically releases kernel mutexes if a process crashes.
+
+### Group Status Window & Keyboard Shortcuts
+
+Closing (`X`) or minimizing the status window hides it to the system tray while recordings continue; left-clicking the tray icon restores it. Inside `RecordingGroupWindow`:
+
+- **`S` / `Ctrl+S`**: Split all active recordings immediately (`Alt+1`..`Alt+9` splits source `1..9` individually).
+- **`O`**: Reveal active recording file(s) in Explorer (`Ctrl+1`..`Ctrl+9` reveals source `1..9` individually).
+- **`C`**: Show or hide the attached Windows console window.
+- **`P`**: Toggle live camera preview on preview-capable USB sources.
+- **`L`**: Expand or collapse per-source live console/FFmpeg stderr log drawers.
+- **`Esc`**: Hide the status window to the system tray.
+- **`Ctrl+Q`**: Gracefully finalize all segments and exit the application.
+
 ## Troubleshooting
 
 ### Camera Not Found

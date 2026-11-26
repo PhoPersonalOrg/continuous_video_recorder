@@ -1,0 +1,33 @@
+# Multi-source Recording Group: Desktop (DDAGrab GPU) + Debut Webcam (DirectShow A/V)
+# Managed by a single process, PyQt6 Status Window, and Windows System Tray icon.
+# Acquires OS-level singleton locks per hardware source so standalone launchers cannot collide.
+
+group:
+  name: "Desktop + Debut"
+  log_dir: ./desktop_recordings/group_logs
+  window_enabled: true
+  show_window_on_start: true
+  hide_console_on_start: false
+
+  sources:
+    - id: desktop_ddagrab
+      label: "Desktop (DDAGrab)"
+      config_path: config_ddagrab_desktop.yaml
+      enabled: true
+      restart_on_error: true
+
+    - id: debut_webcam
+      label: "Debut Webcam (C920)"
+      config_path: config_webcam_debut.yaml
+      enabled: true
+      restart_on_error: true
+      overrides:
+        preview:
+          enabled: false
+
+tray:
+  enabled: true
+  indicator_shape: hexagon      # hexagon | circle (not square)
+  indicator_color: "#00BFFF"    # cyan/blue group recording indicator
+  flash_interval_ms: 500
+  minimize_to_tray: true

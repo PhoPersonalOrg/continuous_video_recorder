@@ -2,6 +2,7 @@
 import datetime
 import logging
 import os
+import queue
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -24,10 +25,11 @@ except ImportError:
 class UsbPreviewWindow:
     """Display a live preview without affecting recorder state."""
 
-    def __init__(self, config: Dict[str, Any], camera_id: int):
+    def __init__(self, config: Dict[str, Any], camera_id: int, *, poll_terminal_keys: bool = True):
         preview_config = config.get("preview", {})
         self.camera_id = camera_id
         self.enabled = preview_config.get("enabled", False)
+        self.poll_terminal_keys = poll_terminal_keys
         self.show_timestamp = preview_config.get("show_timestamp", True)
         preview_resolution = preview_config.get("preview_resolution", [640, 480])
         self.preview_resolution = tuple(preview_resolution) if preview_resolution else None
@@ -86,7 +88,7 @@ class UsbPreviewWindow:
 
 
     def process_terminal_input(self) -> None:
-        if msvcrt is None:
+        if not self.poll_terminal_keys or msvcrt is None:
             return
         while msvcrt.kbhit():
             key = msvcrt.getwch().lower()
@@ -120,15 +122,30 @@ class UsbPreviewWindow:
 class UsbContinuousRecorder:
     """Orchestrates CameraManager + VideoRecorder + LSLTrigger for usb_continuous mode."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], *, poll_terminal_keys: bool = True):
         self.config = config
+        self.poll_terminal_keys = poll_terminal_keys
         self.camera_manager: Optional[CameraManager] = None
         self.video_recorder: Optional[VideoRecorder] = None
         self.lsl_trigger: Optional[LSLTrigger] = None
         self.preview: Optional[UsbPreviewWindow] = None
         self.tray: Optional[TrayController] = None
+        self._external_actions: queue.Queue[str] = queue.Queue()
         self.shutdown_requested = False
         self._shutdown_done = False
+
+    def request_split(self) -> None:
+        """Enqueue a thread-safe manual split request to be executed on the recorder loop thread."""
+        self._external_actions.put("split")
+
+    def request_toggle_preview(self) -> None:
+        """Enqueue a thread-safe preview toggle request to be executed on the recorder loop thread."""
+        self._external_actions.put("toggle_preview")
+
+    def request_stop(self) -> None:
+        """Request graceful loop termination from another thread."""
+        self.shutdown_requested = True
+        self._external_actions.put("stop")
 
 
     def _validate_mode(self, camera_id: int) -> None:
@@ -161,7 +178,9 @@ class UsbContinuousRecorder:
             return False
         self.video_recorder = VideoRecorder(self.config)
         self.lsl_trigger = LSLTrigger(self.config, camera_id)
-        self.preview = UsbPreviewWindow(self.config, camera_id)
+        self.preview = UsbPreviewWindow(
+            self.config, camera_id, poll_terminal_keys=self.poll_terminal_keys
+        )
         return True
 
 
@@ -230,10 +249,23 @@ class UsbContinuousRecorder:
 
 
     def _drain_tray_actions(self) -> None:
+        manual_split_enabled = bool(self.config.get("hotkeys", {}).get("manual_split_enabled", True))
+        while True:
+            try:
+                ext_act = self._external_actions.get_nowait()
+            except queue.Empty:
+                break
+            if ext_act == "stop":
+                self.shutdown_requested = True
+            elif ext_act == "split" and manual_split_enabled:
+                if not self._perform_split("manual_split"):
+                    logger.warning("External split failed (not recording or split error)")
+            elif ext_act == "toggle_preview" and self.preview is not None:
+                self.preview._toggle_preview()
+
         if self.tray is None:
             return
         output_dir = Path(self.config.get("storage", {}).get("output_dir", "."))
-        manual_split_enabled = bool(self.config.get("hotkeys", {}).get("manual_split_enabled", True))
         for action in self.tray.drain_actions():
             if action == TrayAction.EXIT:
                 logger.info("Tray Exit requested")

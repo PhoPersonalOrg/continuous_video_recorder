@@ -1,5 +1,6 @@
 """Main application entry point for continuous video recorder."""
 import cv2
+import sys
 import time
 import logging
 import threading
@@ -13,6 +14,7 @@ from src.config_loader import ConfigLoader
 from src.detector import PresenceDetector
 from src.recorder import VideoRecorder
 from src.lsl_trigger import LSLTrigger
+from src.source_singleton import SourceAlreadyLockedError, SourceSingletonGuard, acquire_config_locks
 from src.utils import setup_logging, setup_signal_handlers, prompt_for_usable_directory
 from src.terminal_hotkey import start_manual_split_hotkey_thread
 
@@ -34,6 +36,8 @@ class ContinuousVideoRecorder:
             config_path: Path to configuration file. If None, uses default location.
         """
         # Load configuration
+        self._config_path = config_path
+        self._source_lock: Optional[SourceSingletonGuard] = None
         self.config = ConfigLoader.load_config(config_path)
         
         storage = self.config.setdefault("storage", {})
@@ -190,6 +194,9 @@ class ContinuousVideoRecorder:
         self.camera_streams.clear()
         
         self.lsl_trigger.close()
+        if self._source_lock is not None:
+            self._source_lock.release()
+            self._source_lock = None
         self.logger.info("Shutdown complete")
     
     def _start_multi_camera_recording(self) -> None:
@@ -415,10 +422,22 @@ class ContinuousVideoRecorder:
         if len(self.cameras) == 0:
             self.logger.error("No cameras configured. Exiting.")
             return
+
+        try:
+            self._source_lock = acquire_config_locks(
+                self.config,
+                program="continuous-video-recorder",
+                config_path=self._config_path,
+            )
+        except SourceAlreadyLockedError as e:
+            self.logger.error("%s", e)
+            print(f"ERROR: {e}", file=sys.stderr)
+            raise SystemExit(2) from e
         
         # Initialize primary camera (first one)
         if not self.initialize_webcam(0):
             self.logger.error("Failed to initialize primary webcam. Exiting.")
+            self.shutdown()
             return
         
         # If multiple cameras, initialize them in separate threads

@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 import threading
 from typing import List, Optional
 
 from src.config_loader import ConfigLoader
 from src.ddagrab_recorder import DDAGrabRecorder, SUPPORTED_ENCODERS
+from src.source_singleton import SourceAlreadyLockedError, acquire_config_locks
 from src.utils import setup_logging, setup_signal_handlers
 
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config_ddagrab_desktop.yaml"
@@ -89,17 +91,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir = Path(ddagrab_cfg.get("output_dir", "./desktop_recordings"))
     log = setup_logging(log_dir=out_dir / "logs")
 
+    try:
+        source_lock = acquire_config_locks(
+            config,
+            program="ddagrab-desktop",
+            config_path=args.config,
+        )
+    except SourceAlreadyLockedError as exc:
+        log.error("%s", exc)
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     recorder = DDAGrabRecorder(config)
     shutdown_event = threading.Event()
 
     def _on_shutdown() -> None:
         shutdown_event.set()
         recorder.stop()
+        source_lock.release()
 
     setup_signal_handlers(_on_shutdown)
 
-    recorder.start()
     try:
+        recorder.start()
         log.info("Active GPU hardware encoder: %s", recorder.encoder)
         for mon_idx, cmd in recorder.get_ffmpeg_commands().items():
             log.info("Monitor %d FFmpeg argv: %s", mon_idx, " ".join(cmd))
@@ -117,6 +131,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
     finally:
         recorder.stop()
+        source_lock.release()
 
     return 0
 

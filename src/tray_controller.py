@@ -14,7 +14,7 @@ import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw
 
@@ -62,9 +62,13 @@ class TrayConfig:
     @classmethod
     def from_app_config(cls, config: Dict[str, Any]) -> "TrayConfig":
         tray = config.get("tray", {}) or {}
+        group = config.get("group", {}) or {}
         webcam = config.get("webcam", {}) or {}
         camera_0 = webcam.get("camera_0", {}) or {}
-        label = str(camera_0.get("name") or "Camera").strip() or "Camera"
+        label = (
+            str(group.get("name") or camera_0.get("name") or "Camera").strip()
+            or "Camera"
+        )
         shape = str(tray.get("indicator_shape", "circle")).strip().lower()
         if shape == "square":
             raise ValueError("tray.indicator_shape must not be 'square' (reserved for stop)")
@@ -499,4 +503,397 @@ def create_tray_controller(
         get_current_file=get_current_file,
         get_output_dir=get_output_dir,
         is_recording=is_recording,
+    )
+
+
+ConsoleWindowController = _ConsoleWindowController
+
+_PARTIAL_RECORDING_COLOR = "#FFA500"
+_ERROR_RECORDING_COLOR = "#FF3B30"
+_WIN32_TOOLTIP_MAX_CHARS = 124
+
+
+class GroupTrayActionKind(str, Enum):
+    TOGGLE_WINDOW = "toggle_window"
+    SHOW_WINDOW = "show_window"
+    HIDE_WINDOW = "hide_window"
+    TOGGLE_CONSOLE = "toggle_console"
+    SHOW_CONSOLE = "show_console"
+    HIDE_CONSOLE = "hide_console"
+    SPLIT_ALL = "split_all"
+    OPEN_ALL_FOLDERS = "open_all_folders"
+    SPLIT_SOURCE = "split_source"
+    OPEN_SOURCE_FOLDER = "open_source_folder"
+    START_SOURCE = "start_source"
+    STOP_SOURCE = "stop_source"
+    TOGGLE_SOURCE_PREVIEW = "toggle_source_preview"
+    EXIT = "exit"
+
+
+@dataclass(frozen=True)
+class GroupTrayAction:
+    kind: GroupTrayActionKind
+    source_id: Optional[str] = None
+
+
+@dataclass
+class TraySourceSpec:
+    source_id: str
+    label: str
+    is_recording: Callable[[], bool]
+    has_error: Callable[[], bool] = lambda: False
+    state_summary: Callable[[], str] = lambda: "Idle"
+    supports_preview: Callable[[], bool] = lambda: False
+
+
+def format_group_tooltip(group_label: str, sources: Sequence[TraySourceSpec]) -> str:
+    """Format a multi-source tray tooltip guaranteed to fit Win32's 128-WCHAR `szTip` buffer."""
+    total = len(sources)
+    rec_count = sum(1 for s in sources if s.is_recording())
+    parts: List[str] = []
+    for src in sources:
+        if src.has_error():
+            st = "Err"
+        elif src.is_recording():
+            st = "Rec"
+        else:
+            st = "Stop"
+        parts.append(f"{src.label}: {st}")
+    ## END for src in sources....
+
+    header = f"{group_label} ({rec_count}/{total} Rec)"
+    full = f"{header} | " + ", ".join(parts) if parts else header
+    if len(full) <= _WIN32_TOOLTIP_MAX_CHARS:
+        return full
+    return full[: _WIN32_TOOLTIP_MAX_CHARS - 1] + "…"
+
+
+class GroupTrayController:
+    """Single Windows system tray controller managing a group of independent recording sources."""
+
+    def __init__(
+        self,
+        tray_config: TrayConfig,
+        sources: Sequence[TraySourceSpec],
+        *,
+        window_enabled: bool = True,
+        is_window_visible: Optional[Callable[[], bool]] = None,
+        console_controller: Optional[_ConsoleWindowController] = None,
+    ) -> None:
+        self.config = tray_config
+        self._sources: List[TraySourceSpec] = list(sources)
+        self._window_enabled = bool(window_enabled)
+        self._is_window_visible = is_window_visible or (lambda: False)
+        self._console = console_controller or _ConsoleWindowController(
+            minimize_to_tray=tray_config.minimize_to_tray
+        )
+        self._actions: queue.Queue[GroupTrayAction] = queue.Queue()
+        self._icon: Any = None
+        self._thread: Optional[threading.Thread] = None
+        self._flash_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._badge_on = True
+        self._lock = threading.Lock()
+
+    @property
+    def console(self) -> _ConsoleWindowController:
+        return self._console
+
+    @property
+    def available(self) -> bool:
+        return pystray is not None and self.config.enabled
+
+    def compute_badge_state(self) -> Tuple[bool, str]:
+        """Return `(should_flash_badge, indicator_hex_color)` across all managed sources."""
+        total = len(self._sources)
+        if total == 0:
+            return (False, self.config.indicator_color)
+        err_count = sum(1 for s in self._sources if s.has_error())
+        rec_count = sum(1 for s in self._sources if s.is_recording())
+        if err_count > 0:
+            return (True, _ERROR_RECORDING_COLOR)
+        if rec_count == total:
+            return (True, self.config.indicator_color)
+        if rec_count > 0:
+            return (True, _PARTIAL_RECORDING_COLOR)
+        return (False, self.config.indicator_color)
+
+    def _short_state(self, src: TraySourceSpec) -> str:
+        if src.has_error():
+            return "Error"
+        if src.is_recording():
+            return "Recording"
+        return "Stopped"
+
+    def _build_source_submenu(self, src: TraySourceSpec) -> Any:
+        assert pystray is not None and item is not None
+        sub_items: List[Any] = [
+            item(
+                lambda _m, s=src: f"Status: {s.state_summary()}",
+                lambda *_a: None,
+                enabled=False,
+            ),
+            item(
+                "Split Recording",
+                self._make_source_cb(GroupTrayActionKind.SPLIT_SOURCE, src.source_id),
+                enabled=lambda _m, s=src: s.is_recording(),
+            ),
+            item(
+                "Reveal in Explorer",
+                self._make_source_cb(GroupTrayActionKind.OPEN_SOURCE_FOLDER, src.source_id),
+            ),
+        ]
+        if src.supports_preview():
+            sub_items.append(
+                item(
+                    "Toggle Preview",
+                    self._make_source_cb(GroupTrayActionKind.TOGGLE_SOURCE_PREVIEW, src.source_id),
+                )
+            )
+        sub_items.append(
+            item(
+                lambda _m, s=src: "Stop Source" if s.is_recording() else "Start Source",
+                self._make_toggle_run_cb(src),
+            )
+        )
+        return pystray.Menu(*sub_items)
+
+    def _build_menu(self) -> Any:
+        assert pystray is not None and item is not None
+        top_items: List[Any] = []
+        if self._window_enabled:
+            top_items.append(
+                item(
+                    lambda _m: "Hide Status Window" if self._is_window_visible() else "Show Status Window",
+                    self._on_toggle_window,
+                    default=True,
+                )
+            )
+            top_items.append(
+                item(
+                    lambda _m: "Hide Console" if self._console.is_visible() else "Show Console",
+                    self._on_toggle_console,
+                )
+            )
+        else:
+            top_items.append(
+                item(
+                    lambda _m: "Hide Console" if self._console.is_visible() else "Show Console",
+                    self._on_toggle_console,
+                    default=True,
+                )
+            )
+
+        top_items.extend(
+            [
+                pystray.Menu.SEPARATOR,
+                item(
+                    "Split All Recordings",
+                    self._on_split_all,
+                    enabled=lambda _m: any(s.is_recording() for s in self._sources),
+                ),
+                item("Reveal All in Explorer", self._on_open_all_folders),
+                pystray.Menu.SEPARATOR,
+            ]
+        )
+
+        for src in self._sources:
+            top_items.append(
+                item(
+                    lambda _m, s=src: f"{s.label} — {self._short_state(s)}",
+                    self._build_source_submenu(src),
+                )
+            )
+        ## END for src in self._sources....
+
+        top_items.extend(
+            [
+                pystray.Menu.SEPARATOR,
+                item("Exit Application", self._on_exit),
+            ]
+        )
+        return pystray.Menu(*top_items)
+
+    def start(self) -> bool:
+        if not self.config.enabled:
+            return False
+        if pystray is None:
+            logger.warning("pystray is not installed; group system tray disabled")
+            return False
+        if not sys_platform_is_windows():
+            logger.warning("System tray controller is Windows-only; disabled")
+            return False
+
+        should_flash, color = self.compute_badge_state()
+        image = build_tray_icon(
+            indicator_shape=self.config.indicator_shape,
+            indicator_color=color,
+            show_indicator=should_flash,
+        )
+        menu = self._build_menu()
+        self._icon = pystray.Icon(
+            "continuous_video_recorder_group",
+            image,
+            self._tooltip(),
+            menu,
+        )
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run_icon, name="GroupTrayIcon", daemon=True)
+        self._thread.start()
+        self._flash_thread = threading.Thread(
+            target=self._flash_loop, name="GroupTrayFlash", daemon=True
+        )
+        self._flash_thread.start()
+        logger.info(
+            "Group system tray started (%d sources, %s / %s)",
+            len(self._sources),
+            self.config.indicator_shape,
+            self.config.indicator_color,
+        )
+        return True
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        icon = self._icon
+        self._icon = None
+        if icon is not None:
+            try:
+                icon.stop()
+            except Exception as e:
+                logger.debug("Group tray icon stop: %s", e)
+        if self._flash_thread is not None and self._flash_thread.is_alive():
+            self._flash_thread.join(timeout=1.0)
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        self._flash_thread = None
+
+    def refresh_now(self) -> None:
+        """Refresh tray icon badge/tooltip and dynamic menu state immediately."""
+        should_flash, _color = self.compute_badge_state()
+        self._refresh_icon(force_badge=should_flash)
+        icon = self._icon
+        if icon is not None:
+            try:
+                icon.update_menu()
+            except Exception:
+                pass
+
+    def drain_actions(self) -> List[GroupTrayAction]:
+        drained: List[GroupTrayAction] = []
+        while True:
+            try:
+                drained.append(self._actions.get_nowait())
+            except queue.Empty:
+                break
+        return drained
+
+    def enqueue(self, action: GroupTrayAction) -> None:
+        self._actions.put(action)
+
+    def is_console_visible(self) -> bool:
+        return self._console.is_visible()
+
+    def show_console(self) -> None:
+        self._console.show()
+
+    def hide_console(self) -> None:
+        self._console.hide()
+
+    def toggle_console(self) -> None:
+        self._console.toggle()
+
+    def _tooltip(self) -> str:
+        return format_group_tooltip(self.config.camera_label, self._sources)
+
+    def _run_icon(self) -> None:
+        assert self._icon is not None
+        try:
+            self._icon.run()
+        except Exception:
+            logger.exception("Group tray icon run() failed")
+
+    def _flash_loop(self) -> None:
+        interval = max(0.1, self.config.flash_interval_ms / 1000.0)
+        while not self._stop_event.wait(interval):
+            should_flash, _color = self.compute_badge_state()
+            if not should_flash:
+                self._refresh_icon(force_badge=False)
+                continue
+            self._badge_on = not self._badge_on
+            self._refresh_icon(force_badge=self._badge_on)
+
+    def _refresh_icon(self, *, force_badge: bool) -> None:
+        icon = self._icon
+        if icon is None:
+            return
+        try:
+            should_flash, color = self.compute_badge_state()
+            show = bool(force_badge) if should_flash else False
+            icon.icon = build_tray_icon(
+                indicator_shape=self.config.indicator_shape,
+                indicator_color=color,
+                show_indicator=show,
+            )
+            icon.title = self._tooltip()
+        except Exception as e:
+            logger.debug("Group tray icon refresh failed: %s", e)
+
+    def _make_source_cb(
+        self, kind: GroupTrayActionKind, source_id: str
+    ) -> Callable[..., None]:
+        def _cb(icon=None, menu_item=None) -> None:  # noqa: ANN001
+            self.enqueue(GroupTrayAction(kind=kind, source_id=source_id))
+
+        return _cb
+
+    def _make_toggle_run_cb(self, src: TraySourceSpec) -> Callable[..., None]:
+        def _cb(icon=None, menu_item=None) -> None:  # noqa: ANN001
+            target_kind = (
+                GroupTrayActionKind.STOP_SOURCE
+                if src.is_recording()
+                else GroupTrayActionKind.START_SOURCE
+            )
+            self.enqueue(GroupTrayAction(kind=target_kind, source_id=src.source_id))
+
+        return _cb
+
+    def _on_toggle_window(self, icon=None, menu_item=None) -> None:  # noqa: ANN001
+        self.enqueue(GroupTrayAction(kind=GroupTrayActionKind.TOGGLE_WINDOW))
+
+    def _on_toggle_console(self, icon=None, menu_item=None) -> None:  # noqa: ANN001
+        self.enqueue(GroupTrayAction(kind=GroupTrayActionKind.TOGGLE_CONSOLE))
+
+    def _on_split_all(self, icon=None, menu_item=None) -> None:  # noqa: ANN001
+        self.enqueue(GroupTrayAction(kind=GroupTrayActionKind.SPLIT_ALL))
+
+    def _on_open_all_folders(self, icon=None, menu_item=None) -> None:  # noqa: ANN001
+        self.enqueue(GroupTrayAction(kind=GroupTrayActionKind.OPEN_ALL_FOLDERS))
+
+    def _on_exit(self, icon=None, menu_item=None) -> None:  # noqa: ANN001
+        self.enqueue(GroupTrayAction(kind=GroupTrayActionKind.EXIT))
+
+
+def create_group_tray_controller(
+    config: Dict[str, Any],
+    sources: Sequence[TraySourceSpec],
+    *,
+    window_enabled: bool = True,
+    is_window_visible: Optional[Callable[[], bool]] = None,
+    console_controller: Optional[_ConsoleWindowController] = None,
+) -> Optional[GroupTrayController]:
+    """Build a `GroupTrayController` from group YAML, or `None` if tray is disabled."""
+    try:
+        tray_cfg = TrayConfig.from_app_config(config)
+    except ValueError as e:
+        logger.error("Invalid group tray config: %s", e)
+        return None
+    if not tray_cfg.enabled:
+        return None
+    return GroupTrayController(
+        tray_cfg,
+        sources,
+        window_enabled=window_enabled,
+        is_window_visible=is_window_visible,
+        console_controller=console_controller,
     )

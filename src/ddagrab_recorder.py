@@ -900,6 +900,8 @@ class _MonitorWorker:
         self.proc_started_mono: Optional[float] = None
         self.last_stderr_mono: Optional[float] = None
         self.last_stderr_error_text: Optional[str] = None
+        self.manual_split_pending = False
+        self.split_resumed_event = threading.Event()
 
         self._rate_window_start = 0.0
         self._rate_logged_in_window = 0
@@ -997,6 +999,29 @@ class DDAGrabRecorder:
     def encoder(self) -> Optional[str]:
         """Return the active verified GPU hardware encoder name once started."""
         return self._resolved_encoder
+
+    @property
+    def output_dir(self) -> Path:
+        """Return the configured output directory for `.mkv` segments."""
+        return self.cfg.output_dir
+
+    def get_current_file(self, monitor_idx: Optional[int] = None) -> Optional[Path]:
+        """Return the newest active `.mkv` segment path for `monitor_idx` (defaults to primary monitor)."""
+        target_mon = self.cfg.output_idx[0] if monitor_idx is None else int(monitor_idx)
+        return self._find_current_segment(target_mon)
+
+    def get_stderr_tail(self, max_lines: int = _STDERR_MAX_LINES) -> List[str]:
+        """Return recent FFmpeg stderr lines across configured monitor workers."""
+        combined: List[str] = []
+        multi = len(self._workers) > 1
+        for mon_idx, worker in self._workers.items():
+            for line in worker.get_stderr_tail(max_lines):
+                combined.append(f"[mon {mon_idx}] {line}" if multi else line)
+            ## END for line in worker.get_stderr_tail(max_lines)....
+
+        ## END for mon_idx, worker in self._workers.items()....
+
+        return combined[-max_lines:] if max_lines > 0 else []
 
     def build_ffmpeg_command(self, monitor_idx: int = 0) -> List[str]:
         """Build the FFmpeg argv list for `monitor_idx` using the resolved or configured encoder."""
@@ -1125,6 +1150,71 @@ class DDAGrabRecorder:
 
             logger.info("DDAGrabRecorder stopped cleanly.")
 
+    def split_recording(self, wait_for_new_process_s: float = 5.0) -> Dict[int, Optional[Path]]:
+        """Gracefully close each monitor's current `.mkv` segment so supervisors immediately start new segments.
+
+        Does not count toward failure `restart_count` or trigger exponential backoff.
+        """
+        with self._lifecycle_lock:
+            if not self._running or self._stop_event.is_set():
+                return {}
+
+            # Guard against 1-second `-strftime` filename collisions when splitting rapidly.
+            now = time.time()
+            collision_possible = False
+            for mon_idx, worker in self._workers.items():
+                rendered = datetime.fromtimestamp(now).strftime(self.cfg.filename_pattern.format(idx=mon_idx))
+                if (self.cfg.output_dir / rendered).exists():
+                    collision_possible = True
+                    break
+                with worker.lock:
+                    if worker.proc_started_wall is not None and int(worker.proc_started_wall) == int(now):
+                        collision_possible = True
+                        break
+            ## END for mon_idx, worker in self._workers.items()....
+
+            if collision_possible:
+                sleep_rem = max(0.05, 1.05 - (now % 1.0))
+                if self._stop_event.wait(timeout=sleep_rem):
+                    return {}
+
+            active_workers: List[_MonitorWorker] = []
+            for worker in self._workers.values():
+                with worker.lock:
+                    proc = worker.process
+                    if proc is not None and proc.poll() is None:
+                        worker.manual_split_pending = True
+                        worker.split_resumed_event.clear()
+                        active_workers.append(worker)
+            ## END for worker in self._workers.values()....
+
+            if not active_workers:
+                return {}
+
+            stop_threads: List[threading.Thread] = []
+            for worker in active_workers:
+                t = threading.Thread(
+                    target=self._graceful_stop_worker,
+                    args=(worker,),
+                    name=f"ddagrab-split-mon{worker.monitor_idx}",
+                    daemon=True,
+                )
+                stop_threads.append(t)
+                t.start()
+            ## END for worker in active_workers....
+
+            for t in stop_threads:
+                t.join(timeout=_GRACEFUL_QUIT_TIMEOUT_S + _TERMINATE_TIMEOUT_S + _KILL_TIMEOUT_S + 2.0)
+            ## END for t in stop_threads....
+
+            deadline = time.monotonic() + max(0.0, float(wait_for_new_process_s))
+            for worker in active_workers:
+                remaining = max(0.0, deadline - time.monotonic())
+                worker.split_resumed_event.wait(timeout=remaining)
+            ## END for worker in active_workers....
+
+            return {mon_idx: self._find_current_segment(mon_idx) for mon_idx in self._workers}
+
     def __enter__(self) -> DDAGrabRecorder:
         self.start()
         return self
@@ -1186,6 +1276,7 @@ class DDAGrabRecorder:
             worker.proc_started_wall = now_wall
             worker.proc_started_mono = now_mono
             worker.stderr_thread = drain
+            worker.split_resumed_event.set()
         drain.start()
         logger.info("Launched FFmpeg for monitor %d (pid=%s): %s", worker.monitor_idx, proc.pid, " ".join(cmd))
         return proc
@@ -1267,6 +1358,8 @@ class DDAGrabRecorder:
             with worker.lock:
                 drain = worker.stderr_thread
                 worker.last_returncode = rc
+                is_manual_split = worker.manual_split_pending
+                worker.manual_split_pending = False
                 if worker.process is proc:
                     worker.process = None
             if drain is not None and drain.is_alive():
@@ -1274,6 +1367,15 @@ class DDAGrabRecorder:
 
             if self._stop_event.is_set():
                 break
+
+            if is_manual_split:
+                worker.backoff.reset()
+                logger.info(
+                    "FFmpeg [mon %d] closed segment for manual split (ran %.1fs); opening new segment immediately.",
+                    worker.monitor_idx,
+                    run_duration,
+                )
+                continue
 
             delay = worker.backoff.record_exit_and_get_delay(run_duration)
             worker.restart_count += 1

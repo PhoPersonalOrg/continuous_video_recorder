@@ -3,7 +3,7 @@ import copy
 import re
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional, Sequence
 import logging
 
 logger = logging.getLogger(__name__)
@@ -299,4 +299,179 @@ class ConfigLoader:
         assert isinstance(tray_config.get("minimize_to_tray", True), bool)
 
         logger.info("Configuration validated successfully")
+
+    DEFAULT_GROUP_CONFIG: Dict[str, Any] = {
+        "group": {
+            "name": "Recording Group",
+            "log_dir": "./recordings/group_logs",
+            "window_enabled": True,
+            "show_window_on_start": True,
+            "hide_console_on_start": False,
+            "sources": [],
+        },
+        "tray": {
+            "enabled": True,
+            "indicator_shape": "hexagon",
+            "indicator_color": "#00BFFF",
+            "flash_interval_ms": 500,
+            "minimize_to_tray": True,
+        },
+    }
+
+    @classmethod
+    def load_group_config(cls, config_path: Path) -> Dict[str, Any]:
+        """Load and validate a multi-source recording group YAML configuration."""
+        config_path = Path(config_path)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Group configuration file not found: {config_path}")
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            user_cfg = yaml.safe_load(f) or {}
+
+        if not isinstance(user_cfg, dict):
+            raise ValueError(f"Group configuration at {config_path} must be a YAML mapping")
+
+        merged = cls._merge_config(copy.deepcopy(cls.DEFAULT_GROUP_CONFIG), user_cfg)
+        return cls._normalize_and_validate_group_config(merged, base_dir=config_path.resolve().parent)
+
+    @classmethod
+    def build_group_config_from_sources(
+        cls,
+        source_paths: Sequence[Path],
+        *,
+        name: str = "Recording Group",
+    ) -> Dict[str, Any]:
+        """Construct and validate a group configuration from CLI `--sources` YAML paths."""
+        raw = copy.deepcopy(cls.DEFAULT_GROUP_CONFIG)
+        raw["group"]["name"] = name
+        entries: List[Dict[str, Any]] = []
+        for idx, spath in enumerate(source_paths):
+            p = Path(spath)
+            entries.append(
+                {
+                    "id": f"source_{idx}_{p.stem}",
+                    "config_path": str(p),
+                    "enabled": True,
+                    "restart_on_error": True,
+                }
+            )
+        ## END for idx, spath in enumerate(source_paths)....
+
+        raw["group"]["sources"] = entries
+        return cls._normalize_and_validate_group_config(raw, base_dir=Path.cwd())
+
+    @classmethod
+    def _derive_default_source_label(cls, source_cfg: Dict[str, Any], fallback_id: str) -> str:
+        backend = str(source_cfg.get("capture", {}).get("backend", "frame_pipe")).strip().lower()
+        if backend == "ddagrab":
+            mons = source_cfg.get("ddagrab", {}).get("output_idx", [0])
+            mon_str = ",".join(str(m) for m in mons) if isinstance(mons, list) else str(mons)
+            return f"Desktop DDAGrab (mon {mon_str})"
+        webcam = source_cfg.get("webcam", {}) or {}
+        cam0 = webcam.get("camera_0", {}) if isinstance(webcam.get("camera_0"), dict) else {}
+        cam_name = str(cam0.get("name") or "").strip()
+        if cam_name:
+            return f"{cam_name} ({backend})"
+        return fallback_id
+
+    @classmethod
+    def _normalize_and_validate_group_config(
+        cls, group_cfg: Dict[str, Any], *, base_dir: Path
+    ) -> Dict[str, Any]:
+        group = group_cfg.get("group")
+        if not isinstance(group, dict):
+            raise ValueError("Group configuration must contain a 'group' mapping")
+
+        group["name"] = str(group.get("name") or "Recording Group").strip() or "Recording Group"
+        group["log_dir"] = str(group.get("log_dir") or "./recordings/group_logs")
+        group["window_enabled"] = bool(group.get("window_enabled", True))
+        group["show_window_on_start"] = bool(group.get("show_window_on_start", True))
+        group["hide_console_on_start"] = bool(group.get("hide_console_on_start", False))
+
+        tray_cfg = group_cfg.get("tray", {}) or {}
+        assert isinstance(tray_cfg.get("enabled", True), bool)
+        shape = str(tray_cfg.get("indicator_shape", "hexagon")).strip().lower()
+        assert shape != "square", "tray.indicator_shape must not be 'square' (reserved for stop)"
+        assert shape in ["hexagon", "circle"], f"tray.indicator_shape must be hexagon or circle (got {shape!r})"
+        color = str(tray_cfg.get("indicator_color", "#00BFFF")).strip()
+        assert color.startswith("#") and len(color) in (7, 9), "tray.indicator_color must be #RRGGBB or #RRGGBBAA"
+        assert int(tray_cfg.get("flash_interval_ms", 500)) >= 100
+        assert isinstance(tray_cfg.get("minimize_to_tray", True), bool)
+
+        raw_sources = group.get("sources")
+        if not isinstance(raw_sources, list) or len(raw_sources) == 0:
+            raise ValueError("group.sources must be a non-empty list of recording source definitions")
+
+        normalized_sources: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for idx, entry in enumerate(raw_sources):
+            if not isinstance(entry, dict):
+                raise ValueError(f"group.sources[{idx}] must be a mapping")
+
+            cfg_path_raw = entry.get("config_path")
+            inline_cfg = entry.get("config")
+            resolved_cfg_path: Optional[Path] = None
+
+            if cfg_path_raw is not None and str(cfg_path_raw).strip():
+                candidate = Path(str(cfg_path_raw).strip())
+                if not candidate.is_absolute():
+                    rel_to_group = (base_dir / candidate).resolve()
+                    if rel_to_group.exists():
+                        candidate = rel_to_group
+                    else:
+                        candidate = candidate.resolve()
+                if not candidate.exists():
+                    raise FileNotFoundError(
+                        f"group.sources[{idx}].config_path does not exist: {cfg_path_raw!r} (resolved: {candidate})"
+                    )
+                resolved_cfg_path = candidate
+                base_source_cfg = cls.load_config(candidate)
+            elif isinstance(inline_cfg, dict):
+                base_source_cfg = cls._merge_config(copy.deepcopy(cls.DEFAULT_CONFIG), inline_cfg)
+            else:
+                raise ValueError(
+                    f"group.sources[{idx}] must specify either 'config_path' or an inline 'config' mapping"
+                )
+
+            # Group owns the single system tray; default per-source preview off unless explicitly overridden.
+            base_source_cfg.setdefault("tray", {})["enabled"] = False
+            overrides = entry.get("overrides") or {}
+            if not isinstance(overrides, dict):
+                raise ValueError(f"group.sources[{idx}].overrides must be a mapping when provided")
+            if "preview" not in overrides or not isinstance(overrides.get("preview"), dict) or "enabled" not in overrides["preview"]:
+                base_source_cfg.setdefault("preview", {})["enabled"] = False
+
+            merged_source = cls._merge_config(base_source_cfg, overrides)
+            merged_source.setdefault("tray", {})["enabled"] = False
+            cls._validate_config(merged_source)
+
+            default_id = (
+                resolved_cfg_path.stem
+                if resolved_cfg_path is not None
+                else f"source_{idx}"
+            )
+            raw_id = str(entry.get("id") or default_id).strip()
+            source_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_id).strip("_") or f"source_{idx}"
+            if source_id in seen_ids:
+                raise ValueError(f"Duplicate group source id {source_id!r} in group.sources")
+            seen_ids.add(source_id)
+
+            label = str(entry.get("label") or "").strip() or cls._derive_default_source_label(
+                merged_source, source_id
+            )
+            normalized_sources.append(
+                {
+                    "id": source_id,
+                    "label": label,
+                    "enabled": bool(entry.get("enabled", True)),
+                    "restart_on_error": bool(entry.get("restart_on_error", True)),
+                    "config_path": str(resolved_cfg_path) if resolved_cfg_path is not None else None,
+                    "resolved_config": merged_source,
+                }
+            )
+        ## END for idx, entry in enumerate(raw_sources)....
+
+        group["sources"] = normalized_sources
+        return group_cfg
 

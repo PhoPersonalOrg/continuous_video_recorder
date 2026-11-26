@@ -34,6 +34,7 @@ debut-example = "examples.debut_example:main"
 epocx-eyecam-usb = "examples.epocXEyeCamUSB_example:main"
 m1mbp-webcam = "examples.m1mbp_webcam_example:main"
 ddagrab-desktop = "examples.ddagrab_example:main"
+recording-group = "examples.recording_group_example:main"
 
 [project.optional-dependencies]
 windows = [
