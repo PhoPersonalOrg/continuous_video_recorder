@@ -5,7 +5,8 @@ capture:
   backend: ddagrab
 
 ddagrab:
-  ffmpeg_path: null          # null -> shutil.which("ffmpeg"); requires FFmpeg >= 6.0 (>= 7.0 for dup_frames=false)
+  ffmpeg_path: EXTERNAL/bin/ffmpeg-8.0.1-full_build/bin/ffmpeg.exe
+  # ffmpeg_path: null          # null -> shutil.which("ffmpeg"); requires FFmpeg >= 6.0 (>= 7.0 for dup_frames=false)
   output_dir: ./desktop_recordings
   framerate: 4               # Capture cap in fps (1 frame per 250 ms max)
   dup_frames: false          # Critical: emit no frames when screen is unchanged (~0 idle CPU/disk)
