@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -31,6 +33,7 @@ _ALLOWED_SHAPES = frozenset({"hexagon", "circle"})
 _ICON_SIZE = 64
 SW_HIDE = 0
 SW_SHOW = 5
+SW_RESTORE = 9
 WM_CLOSE = 0x0010
 WM_SYSCOMMAND = 0x0112
 WM_SIZE = 0x0005
@@ -39,6 +42,7 @@ GWL_WNDPROC = -4
 SC_CLOSE = 0xF060
 SC_MINIMIZE = 0xF020
 MF_BYCOMMAND = 0x0000
+_MINIMIZE_POLL_INTERVAL_S = 0.15
 
 
 class TrayAction(str, Enum):
@@ -197,19 +201,42 @@ class _ConsoleWindowController:
         if sys_platform_is_windows():
             self._init_win32()
 
+    @property
+    def has_window(self) -> bool:
+        return self._hwnd is not None and self._user32 is not None
+
     def _init_win32(self) -> None:
         import ctypes
         from ctypes import wintypes
 
-        self._user32 = ctypes.windll.user32
-        self._kernel32 = ctypes.windll.kernel32
+        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._kernel32.GetConsoleWindow.restype = wintypes.HWND
         hwnd = int(self._kernel32.GetConsoleWindow() or 0)
-        self._hwnd = hwnd if hwnd else None
-        if self._hwnd is None:
+        if not hwnd:
+            self._hwnd = None
             logger.warning("No console window attached; tray console show/hide disabled")
             return
-        self._install_close_handler()
+
+        class_buf = ctypes.create_unicode_buffer(64)
+        if self._user32.GetClassNameW(wintypes.HWND(hwnd), class_buf, 64) > 0:
+            if class_buf.value == "PseudoConsoleWindow":
+                self._hwnd = None
+                logger.debug(
+                    "Attached to ConPTY PseudoConsoleWindow; raw console window show/hide disabled"
+                )
+                return
+
+        self._hwnd = hwnd
+        win_pid = wintypes.DWORD(0)
+        self._user32.GetWindowThreadProcessId(wintypes.HWND(self._hwnd), ctypes.byref(win_pid))
+        if int(win_pid.value) == os.getpid():
+            self._install_close_handler()
+        else:
+            # Standard Windows conhost.exe owns GetConsoleWindow() in a separate process,
+            # where SetWindowLongPtrW(GWL_WNDPROC) fails with ERROR_ACCESS_DENIED. Disable
+            # SC_CLOSE and use cross-process IsIconic polling for minimize-to-tray.
+            self._remove_close_menu()
 
     def _should_hide_on_minimize(self, msg: int, wparam: int) -> bool:
         if not self._minimize_to_tray:
@@ -256,7 +283,13 @@ class _ConsoleWindowController:
             get_long.restype = ctypes.c_void_p
             set_long.restype = ctypes.c_void_p
             self._old_wndproc = get_long(self._hwnd, GWL_WNDPROC)
-            set_long(self._hwnd, GWL_WNDPROC, ctypes.cast(self._wndproc_ref, ctypes.c_void_p))
+            ctypes.set_last_error(0)
+            prev_proc = set_long(
+                self._hwnd, GWL_WNDPROC, ctypes.cast(self._wndproc_ref, ctypes.c_void_p)
+            )
+            last_err = ctypes.get_last_error()
+            if not prev_proc and last_err != 0:
+                raise ctypes.WinError(last_err)
             if self._minimize_to_tray:
                 logger.info(
                     "Console WM_CLOSE/minimize handlers installed (close and minimize hide to tray)"
@@ -279,15 +312,38 @@ class _ConsoleWindowController:
         except Exception as e:
             logger.warning("Failed to remove console SC_CLOSE: %s", e)
 
+    def restore_system_menu(self) -> None:
+        if self._hwnd is None or self._user32 is None or not self._close_removed:
+            return
+        try:
+            self._user32.GetSystemMenu(self._hwnd, True)
+            self._close_removed = False
+        except Exception as e:
+            logger.debug("Failed to restore console system menu: %s", e)
+
+    def poll_minimize_to_tray(self) -> bool:
+        """If `minimize_to_tray` is active and the console was minimized, hide it to tray."""
+        if not self._minimize_to_tray or self._hwnd is None or self._user32 is None:
+            return False
+        if bool(self._user32.IsWindowVisible(self._hwnd)) and bool(
+            self._user32.IsIconic(self._hwnd)
+        ):
+            self._user32.ShowWindow(self._hwnd, SW_HIDE)
+            return True
+        return False
+
     def is_visible(self) -> bool:
         if self._hwnd is None or self._user32 is None:
-            return True
+            return False
         return bool(self._user32.IsWindowVisible(self._hwnd))
 
     def show(self) -> None:
         if self._hwnd is None or self._user32 is None:
             return
-        self._user32.ShowWindow(self._hwnd, SW_SHOW)
+        if bool(self._user32.IsIconic(self._hwnd)):
+            self._user32.ShowWindow(self._hwnd, SW_RESTORE)
+        else:
+            self._user32.ShowWindow(self._hwnd, SW_SHOW)
         self._user32.SetForegroundWindow(self._hwnd)
 
     def hide(self) -> None:
@@ -384,6 +440,7 @@ class TrayController:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._console.restore_system_menu()
         icon = self._icon
         self._icon = None
         if icon is not None:
@@ -434,15 +491,28 @@ class TrayController:
             logger.exception("Tray icon run() failed")
 
     def _flash_loop(self) -> None:
-        interval = max(0.1, self.config.flash_interval_ms / 1000.0)
-        while not self._stop_event.wait(interval):
+        flash_interval = max(0.1, self.config.flash_interval_ms / 1000.0)
+        poll_step = min(_MINIMIZE_POLL_INTERVAL_S, flash_interval)
+        next_flash = time.monotonic() + flash_interval
+        while not self._stop_event.wait(poll_step):
+            if self._console.poll_minimize_to_tray():
+                icon = self._icon
+                if icon is not None:
+                    try:
+                        icon.update_menu()
+                    except Exception:
+                        pass
+            now = time.monotonic()
+            if now < next_flash:
+                continue
+            next_flash = now + flash_interval
             with self._lock:
                 recording = self._recording
             if not recording:
                 continue
             self._badge_on = not self._badge_on
             self._refresh_icon(force_badge=self._badge_on)
-        ## END while not self._stop_event.wait(interval)
+        ## END while not self._stop_event.wait(poll_step)
 
     def _compose_icon(self, *, show_indicator: bool) -> Image.Image:
         return build_tray_icon(
@@ -754,6 +824,7 @@ class GroupTrayController:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._console.restore_system_menu()
         icon = self._icon
         self._icon = None
         if icon is not None:
@@ -814,8 +885,21 @@ class GroupTrayController:
             logger.exception("Group tray icon run() failed")
 
     def _flash_loop(self) -> None:
-        interval = max(0.1, self.config.flash_interval_ms / 1000.0)
-        while not self._stop_event.wait(interval):
+        flash_interval = max(0.1, self.config.flash_interval_ms / 1000.0)
+        poll_step = min(_MINIMIZE_POLL_INTERVAL_S, flash_interval)
+        next_flash = time.monotonic() + flash_interval
+        while not self._stop_event.wait(poll_step):
+            if self._console.poll_minimize_to_tray():
+                icon = self._icon
+                if icon is not None:
+                    try:
+                        icon.update_menu()
+                    except Exception:
+                        pass
+            now = time.monotonic()
+            if now < next_flash:
+                continue
+            next_flash = now + flash_interval
             should_flash, _color = self.compute_badge_state()
             if not should_flash:
                 self._refresh_icon(force_badge=False)

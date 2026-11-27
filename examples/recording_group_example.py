@@ -55,10 +55,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable the PyQt6 status window (tray + console hotkeys only).",
     )
-    parser.add_argument(
+    console_group = parser.add_mutually_exclusive_group()
+    console_group.add_argument(
         "--hide-console",
         action="store_true",
-        help="Hide the attached Windows console window automatically on startup.",
+        help="Hide the attached Windows console window into the system tray on startup (default).",
+    )
+    console_group.add_argument(
+        "--show-console",
+        action="store_true",
+        help="Keep the attached Windows console window visible on startup.",
     )
     return parser
 
@@ -84,17 +90,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         group_cfg["group"]["window_enabled"] = False
     if args.hide_console:
         group_cfg["group"]["hide_console_on_start"] = True
+    elif args.show_console:
+        group_cfg["group"]["hide_console_on_start"] = False
 
     manager = RecordingGroupManager(group_cfg, group_config_path=cfg_path)
     try:
         return manager.run()
     except SourceAlreadyLockedError as exc:
+        manager.show_console()
         manager.logger.error("%s", exc)
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         manager.shutdown()
         return 0
+    except Exception as exc:
+        manager.show_console()
+        manager.logger.exception("Unhandled error in recording group")
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

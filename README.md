@@ -376,7 +376,7 @@ ffmpeg -ss 00:20:00 -to 00:25:00 -i 2026-11-25_14-00-00_mon0.mkv -c copy clip.mk
 To supervise multiple independent recording sources (for example `ddagrab` desktop capture and `debut` DirectShow webcam A/V) inside a **single process** with **one Windows system tray icon** and a **PyQt6 Status & Control Window**:
 
 ```powershell
-# Launch the default Desktop + Debut recording group
+# Launch the default Desktop + Debut recording group (launch console hides to system tray automatically)
 uv run recording-group
 # or: .\scripts\recording-group.ps1
 
@@ -384,8 +384,9 @@ uv run recording-group
 uv run recording-group --config config_group_debut_ddagrab.yaml
 uv run recording-group --sources config_ddagrab_desktop.yaml config_webcam_debut.yaml
 
-# Headless tray-only mode with console hidden at startup
-uv run recording-group --no-window --hide-console
+# Headless tray-only mode, or keep launch console visible on startup
+uv run recording-group --no-window
+uv run recording-group --show-console
 ```
 
 ### Cross-Process Per-Source Singleton Locks

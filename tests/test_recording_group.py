@@ -27,9 +27,14 @@ from src.recording_group import (
 )
 from src.source_singleton import SourceAlreadyLockedError, acquire_sources_all_or_nothing
 from src.tray_controller import (
+    ConsoleWindowController,
     GroupTrayAction,
     GroupTrayActionKind,
     GroupTrayController,
+    SC_CLOSE,
+    SW_HIDE,
+    SW_RESTORE,
+    SW_SHOW,
     TrayConfig,
     TraySourceSpec,
     format_group_tooltip,
@@ -201,6 +206,7 @@ class _FakeManagedSource(ManagedRecordingSource):
 def test_load_group_config_and_build_from_sources():
     grp = ConfigLoader.load_group_config(REPO_ROOT / "config_group_debut_ddagrab.yaml")
     assert grp["group"]["name"] == "Desktop + Debut"
+    assert grp["group"]["hide_console_on_start"] is True
     sources = grp["group"]["sources"]
     assert len(sources) == 2
     assert sources[0]["id"] == "desktop_ddagrab"
@@ -215,6 +221,7 @@ def test_load_group_config_and_build_from_sources():
         name="AdHoc Pair",
     )
     assert adhoc["group"]["name"] == "AdHoc Pair"
+    assert adhoc["group"]["hide_console_on_start"] is True
     assert len(adhoc["group"]["sources"]) == 2
 
 
@@ -542,3 +549,121 @@ def test_recording_group_window_status_paths_reveal_console_and_shortcuts(tmp_pa
             assert all(s.is_recording for s in mgr.snapshots())
     finally:
         mgr.shutdown()
+
+
+def test_group_hides_launch_console_into_tray_on_start(tmp_path: Path):
+    from examples.recording_group_example import build_arg_parser
+
+    parser = build_arg_parser()
+    parsed_default = parser.parse_args([])
+    assert parsed_default.hide_console is False
+    assert parsed_default.show_console is False
+    parsed_show = parser.parse_args(["--show-console"])
+    assert parsed_show.show_console is True
+
+    ns = _unique_ns()
+    group_cfg = _make_two_source_group_dict(tmp_path)
+    group_cfg["group"]["hide_console_on_start"] = True
+    group_cfg["tray"]["enabled"] = True
+
+    def _factory(spec: Mapping[str, Any]) -> ManagedRecordingSource:
+        sid = str(spec["id"])
+        backend = "ddagrab" if sid == "desktop" else "dshow_av"
+        return _FakeManagedSource(
+            source_id=sid,
+            label=str(spec["label"]),
+            backend=backend,
+            config=dict(spec["resolved_config"]),
+            output_dir=tmp_path / sid,
+        )
+
+    fake_tray = MagicMock()
+    fake_tray.start.return_value = True
+
+    mgr = RecordingGroupManager(
+        group_cfg,
+        lock_namespace=ns,
+        source_factory=_factory,
+        poll_console=False,
+    )
+    hide_calls: List[int] = []
+    mgr.console.hide = lambda: hide_calls.append(1)  # type: ignore[method-assign]
+
+    with patch("src.recording_group.create_group_tray_controller", return_value=fake_tray):
+        assert mgr.start(resolve_dshow_locks=False) is True
+        try:
+            assert len(hide_calls) == 1
+        finally:
+            mgr.shutdown()
+
+    # If tray is disabled/unavailable, do NOT hide console into a non-existent tray.
+    ns2 = _unique_ns()
+    group_cfg_no_tray = _make_two_source_group_dict(tmp_path / "no_tray")
+    group_cfg_no_tray["group"]["hide_console_on_start"] = True
+    group_cfg_no_tray["tray"]["enabled"] = False
+    mgr2 = RecordingGroupManager(
+        group_cfg_no_tray,
+        lock_namespace=ns2,
+        source_factory=_factory,
+        poll_console=False,
+    )
+    hide_calls_2: List[int] = []
+    mgr2.console.hide = lambda: hide_calls_2.append(1)  # type: ignore[method-assign]
+    assert mgr2.start(resolve_dshow_locks=False) is True
+    try:
+        assert len(hide_calls_2) == 0
+    finally:
+        mgr2.shutdown()
+
+
+def test_console_window_controller_minimize_to_tray_and_restore():
+    with patch("src.tray_controller.sys_platform_is_windows", return_value=False):
+        ctrl = ConsoleWindowController(minimize_to_tray=True)
+
+    fake_user32 = MagicMock()
+    state = {"visible": 1, "iconic": 0}
+    fake_user32.IsWindowVisible.side_effect = lambda _h: state["visible"]
+    fake_user32.IsIconic.side_effect = lambda _h: state["iconic"]
+
+    def _show_win(_h: int, cmd: int) -> int:
+        if cmd == SW_HIDE:
+            state["visible"] = 0
+        elif cmd == SW_SHOW:
+            state["visible"] = 1
+        elif cmd == SW_RESTORE:
+            state["visible"] = 1
+            state["iconic"] = 0
+        return 1
+
+    fake_user32.ShowWindow.side_effect = _show_win
+    fake_user32.GetSystemMenu.return_value = 999
+
+    ctrl._hwnd = 0x12345
+    ctrl._user32 = fake_user32
+
+    # Cross-process conhost fallback removes SC_CLOSE and restores cleanly on exit
+    ctrl._remove_close_menu()
+    fake_user32.DeleteMenu.assert_called_once_with(999, SC_CLOSE, 0)
+    assert ctrl._close_removed is True
+
+    # Normal visible window (not minimized) -> poll_minimize_to_tray is a no-op
+    assert ctrl.poll_minimize_to_tray() is False
+    assert ctrl.is_visible() is True
+
+    # User clicks Minimize ('_') on PowerShell console -> IsIconic becomes 1 -> hides to tray!
+    state["iconic"] = 1
+    assert ctrl.poll_minimize_to_tray() is True
+    fake_user32.ShowWindow.assert_called_with(0x12345, SW_HIDE)
+    assert ctrl.is_visible() is False
+
+    # Restoring console from tray/GUI uses SW_RESTORE (9) so it un-minimizes onto desktop
+    ctrl.show()
+    fake_user32.ShowWindow.assert_called_with(0x12345, SW_RESTORE)
+    fake_user32.SetForegroundWindow.assert_called_once_with(0x12345)
+    assert ctrl.is_visible() is True
+    assert state["iconic"] == 0
+
+    ctrl.restore_system_menu()
+    fake_user32.GetSystemMenu.assert_called_with(0x12345, True)
+    assert ctrl._close_removed is False
+

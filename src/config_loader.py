@@ -306,7 +306,7 @@ class ConfigLoader:
             "log_dir": "./recordings/group_logs",
             "window_enabled": True,
             "show_window_on_start": True,
-            "hide_console_on_start": False,
+            "hide_console_on_start": True,
             "sources": [],
         },
         "tray": {
@@ -386,7 +386,7 @@ class ConfigLoader:
         group["log_dir"] = str(group.get("log_dir") or "./recordings/group_logs")
         group["window_enabled"] = bool(group.get("window_enabled", True))
         group["show_window_on_start"] = bool(group.get("show_window_on_start", True))
-        group["hide_console_on_start"] = bool(group.get("hide_console_on_start", False))
+        group["hide_console_on_start"] = bool(group.get("hide_console_on_start", True))
 
         tray_cfg = group_cfg.get("tray", {}) or {}
         assert isinstance(tray_cfg.get("enabled", True), bool)

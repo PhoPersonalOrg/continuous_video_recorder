@@ -7,7 +7,7 @@ group:
   log_dir: ./desktop_recordings/group_logs
   window_enabled: true
   show_window_on_start: true
-  hide_console_on_start: false
+  hide_console_on_start: true  # hide PowerShell/CMD launch console into system tray on start
 
   sources:
     - id: desktop_ddagrab

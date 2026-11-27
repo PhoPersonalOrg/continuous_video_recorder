@@ -1033,7 +1033,7 @@ class RecordingGroupManager:
         self.log_dir = Path(grp.get("log_dir") or "./recordings/group_logs")
         self.window_enabled = bool(grp.get("window_enabled", True))
         self.show_window_on_start = bool(grp.get("show_window_on_start", True))
-        self.hide_console_on_start = bool(grp.get("hide_console_on_start", False))
+        self.hide_console_on_start = bool(grp.get("hide_console_on_start", True))
 
         self.logger = setup_logging(log_dir=self.log_dir)
 
@@ -1181,7 +1181,7 @@ class RecordingGroupManager:
         if self.tray is not None and not self.tray.start():
             self.tray = None
 
-        if self.hide_console_on_start:
+        if self.hide_console_on_start and self.tray is not None:
             self.hide_console()
 
         return True
@@ -1360,6 +1360,8 @@ class RecordingGroupManager:
     def process_pending_events(self, *, async_source_ops: bool = False) -> None:
         """Drain pending tray actions and console hotkeys (`s`, `o`, `c`, `p`, `w`)."""
         if self.tray is not None:
+            if self.console.poll_minimize_to_tray():
+                self.tray.refresh_now()
             for action in self.tray.drain_actions():
                 self.handle_tray_action(action, run_async=async_source_ops)
             ## END for action in self.tray.drain_actions()....
@@ -1398,6 +1400,10 @@ class RecordingGroupManager:
                 )
                 while not self._shutdown_event.wait(timeout=0.25):
                     self.process_pending_events(async_source_ops=False)
+        except BaseException as exc:
+            if not isinstance(exc, KeyboardInterrupt):
+                self.show_console()
+            raise
         finally:
             self.shutdown()
         return 0
@@ -1429,6 +1435,8 @@ class RecordingGroupManager:
             except Exception as exc:
                 self.logger.debug("Group tray stop error: %s", exc)
             self.tray = None
+        else:
+            self.console.restore_system_menu()
 
         stop_threads: List[threading.Thread] = []
         for src in self._sources_list:
